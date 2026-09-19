@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "local.pi-image-gen",
   "name": "PI Image Generation",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A native pi agent image generation and editing tool for Codex Responses-compatible providers.",
   "i18n": {
     "en": {
