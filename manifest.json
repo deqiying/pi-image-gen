@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "local.pi-image-gen",
+  "name": "PI Image Generation",
+  "version": "0.1.0",
+  "description": "A native pi agent image generation and editing tool for Codex Responses-compatible providers.",
+  "i18n": {
+    "en": {
+      "name": "PI Image Generation",
+      "description": "A native pi agent image generation and editing tool for Codex Responses-compatible providers.",
+      "safetyNotes": "Runs as trusted agent extension code and may send prompts and explicitly approved local reference images to the configured provider."
+    },
+    "zh-CN": {
+      "name": "PI 图片生成",
+      "description": "为 Codex Responses 兼容服务商提供原生 pi agent 图片生成和编辑工具。",
+      "safetyNotes": "以受信任 agent extension 代码运行，会将提示词和明确批准的本地参考图发送到配置的服务商。"
+    }
+  },
+  "author": "Local",
+  "license": "MIT",
+  "main": "main.cjs",
+  "contributes": {
+    "agentExtensions": ["src/index.ts"]
+  },
+  "permissions": ["agent.extension"],
+  "engines": {
+    "piDesktop": ">=0.9.0"
+  },
+  "activationEvents": ["onStartup"]
+}

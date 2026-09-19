@@ -1,0 +1,34 @@
+{
+  "name": "pi-image-gen",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Native pi agent image generation and editing through Codex Responses image_generation.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": ["src/index.ts"]
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test src/image-generation/*.test.ts src/index.integration.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": ">=0.85.1",
+    "@earendil-works/pi-ai": ">=0.85.1",
+    "@earendil-works/pi-coding-agent": ">=0.85.1",
+    "@earendil-works/pi-tui": ">=0.85.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0"
+  }
+}

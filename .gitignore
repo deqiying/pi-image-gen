@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+
+# Local image-gen configuration may contain provider-specific metadata.
+config.json
+.pi/
+.idea/
