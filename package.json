@@ -1,6 +1,6 @@
 {
   "name": "pi-image-gen",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": false,
   "type": "module",
   "description": "Native pi agent image generation and editing through OpenAI-compatible Images APIs.",
