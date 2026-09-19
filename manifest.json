@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "local.pi-image-gen",
   "name": "PI Image Generation",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A native pi agent image generation and editing tool for Codex Responses-compatible providers.",
   "i18n": {
     "en": {
@@ -20,11 +20,17 @@
   "license": "MIT",
   "main": "main.cjs",
   "contributes": {
-    "agentExtensions": ["src/index.ts"]
+    "agentExtensions": [
+      "src/index.ts"
+    ]
   },
-  "permissions": ["agent.extension"],
+  "permissions": [
+    "agent.extension"
+  ],
   "engines": {
     "piDesktop": ">=0.9.0"
   },
-  "activationEvents": ["onStartup"]
+  "activationEvents": [
+    "onStartup"
+  ]
 }

@@ -1,6 +1,6 @@
 {
   "name": "pi-image-gen",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "description": "Native pi agent image generation and editing through Codex Responses image_generation.",
@@ -9,7 +9,9 @@
     "node": ">=22.19.0"
   },
   "pi": {
-    "extensions": ["src/index.ts"]
+    "extensions": [
+      "src/index.ts"
+    ]
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
