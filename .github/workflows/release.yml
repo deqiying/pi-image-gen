@@ -1,0 +1,142 @@
+name: Release Plugin
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22.19.0"
+  PNPM_VERSION: "11.18.0"
+  # Use the PI-Desktop release whose plugin-devkit protocol is used below.
+  PI_DESKTOP_REF: "v0.15.1-beta.3"
+
+jobs:
+  verify-tag:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify tag belongs to main and matches package versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          node <<'NODE'
+          const fs = require("node:fs");
+          const tag = process.env.GITHUB_REF_NAME;
+          if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(tag)) {
+            throw new Error(`unexpected release tag: ${tag}`);
+          }
+
+          const expectedVersion = tag.slice(1);
+          for (const file of ["package.json", "package-lock.json", "manifest.json"]) {
+            const value = JSON.parse(fs.readFileSync(file, "utf8")).version;
+            if (value !== expectedVersion) {
+              throw new Error(`${file} has version ${value}, expected ${expectedVersion}`);
+            }
+          }
+          NODE
+
+  build:
+    name: Check and package (${{ matrix.os }})
+    needs: verify-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Check out plugin repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Install plugin dependencies
+        run: npm ci
+
+      - name: Run plugin checks
+        run: npm run check
+
+      - name: Check out PI-Desktop plugin devkit
+        uses: actions/checkout@v4
+        with:
+          repository: vastsa/PI-Desktop
+          ref: ${{ env.PI_DESKTOP_REF }}
+          path: pi-desktop
+          fetch-depth: 1
+
+      - name: Build PI-Desktop plugin devkit
+        run: pnpm install --frozen-lockfile --filter "@pi-desktop/plugin-devkit..."
+        working-directory: pi-desktop
+
+      - name: Build plugin devkit CLI
+        run: pnpm --filter "@pi-desktop/plugin-devkit..." build
+        working-directory: pi-desktop
+
+      - name: Validate plugin manifest with PI-Desktop devkit
+        run: node pi-desktop/packages/plugin-devkit/dist/cli.js check .
+
+      - name: Package plugin with PI-Desktop devkit
+        run: node pi-desktop/packages/plugin-devkit/dist/cli.js pack . --out dist
+
+      - name: Upload platform package
+        uses: actions/upload-artifact@v4
+        with:
+          name: piplug-${{ matrix.os }}
+          path: dist/*.piplug
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Linux package
+        uses: actions/download-artifact@v4
+        with:
+          name: piplug-ubuntu-latest
+          path: release-assets
+
+      - name: Create release and upload plugin package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" release-assets/*.piplug \
+            --verify-tag \
+            --title "PI Image Generation $GITHUB_REF_NAME" \
+            --generate-notes

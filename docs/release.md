@@ -37,3 +37,20 @@ pwsh -File scripts/release.ps1 0.1.1
 ```bash
 git restore package.json package-lock.json manifest.json
 ```
+
+## GitHub Actions 发布
+
+将本地 release 脚本输出的一行命令执行后：
+
+```bash
+git push origin main && git push origin v0.1.1
+```
+
+推送 `v*` tag 会触发 `.github/workflows/release.yml`：
+
+1. 校验 tag 指向的提交属于 `main`，并确认三个版本文件与 tag 一致；
+2. 在 `ubuntu-latest` 和 `windows-latest` 上运行 `npm ci`、`npm run check`；
+3. 从固定版本的 PI-Desktop 源码构建 `@pi-desktop/plugin-devkit`，调用其 `check` 和 `pack` 接口协议；
+4. 将生成的 `.piplug` 包作为 GitHub Release 资产上传。
+
+当前 workflow 只发布 PI-Desktop 插件包，不执行 `npm publish`，也不需要 npm 发布 token。`PI_DESKTOP_REF` 用于锁定构建所依据的 PI-Desktop devkit 版本；升级 PI-Desktop 时只需同步调整该值并验证 workflow。
