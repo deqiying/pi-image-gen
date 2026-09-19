@@ -40,6 +40,8 @@ git restore package.json package-lock.json manifest.json
 
 ## GitHub Actions 发布
 
+正式 Marketplace 插件 ID 为 `deqiying.pi-image-gen`。此前使用 `local.pi-image-gen` 安装的开发版与 Marketplace 版属于两个不同插件，宿主不会在两个 ID 之间自动迁移设置、授权或安装状态；发布前应卸载旧开发版，再安装 Marketplace 版本。
+
 将本地 release 脚本输出的一行命令执行后：
 
 ```bash
@@ -50,7 +52,10 @@ git push origin main && git push origin v0.1.1
 
 1. 校验 tag 指向的提交属于 `main`，并确认三个版本文件与 tag 一致；
 2. 在 `ubuntu-latest` 和 `windows-latest` 上运行 `npm ci`、`npm run check`；
-3. 从固定版本的 PI-Desktop 源码构建 `@pi-desktop/plugin-devkit`，调用其 `check` 和 `pack` 接口协议；
-4. 将生成的 `.piplug` 包作为 GitHub Release 资产上传。
+3. 从固定版本的 PI-Desktop 源码构建 `@pi-desktop/plugin-devkit`，调用其 `check` 和 `publish` 协议；
+4. `publish` 使用当前 tag 的 `refs/tags/<tag>` 作为可复现来源，生成 `deqiying.pi-image-gen-<version>.piplug` 和对应的 `.submission.json`；
+5. 将 Ubuntu 构建生成的 `.piplug` 与 `.submission.json` 一起上传到 GitHub Release。
 
-当前 workflow 只发布 PI-Desktop 插件包，不执行 `npm publish`，也不需要 npm 发布 token。`PI_DESKTOP_REF` 用于锁定构建所依据的 PI-Desktop devkit 版本；升级 PI-Desktop 时只需同步调整该值并验证 workflow。
+GitHub Actions 不直接调用插件中心提交 API。官方发布接口要求已登录的浏览器会话、CSRF 和 Origin 校验，且不支持 Personal Access Token；Release 创建后，需要登录 PI-Desktop Marketplace 发布者控制台，提交 Release 中的 `.submission.json`。插件中心会重新解析 tag、commit 和 Release 资产并执行审核。
+
+workflow 不执行 `npm publish`，也不需要 npm 发布 token。`PI_DESKTOP_REF` 用于锁定构建所依据的 PI-Desktop devkit 版本；升级 PI-Desktop 时应同步调整该值并重新验证 workflow。

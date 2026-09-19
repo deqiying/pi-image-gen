@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "local.pi-image-gen",
+  "id": "deqiying.pi-image-gen",
   "name": "PI Image Generation",
   "version": "0.1.4",
   "description": "A native pi agent tool for direct OpenAI-compatible image generation and editing APIs.",
@@ -16,7 +16,7 @@
       "safetyNotes": "以受信任 agent extension 代码运行，会将提示词和明确批准的本地参考图发送到配置的服务商。"
     }
   },
-  "author": "Local",
+  "author": "deqiying",
   "license": "MIT",
   "main": "main.cjs",
   "contributes": {

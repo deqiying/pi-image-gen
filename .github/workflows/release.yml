@@ -1,4 +1,4 @@
-name: Release Plugin
+name: Release Marketplace Plugin
 
 on:
   push:
@@ -56,7 +56,7 @@ jobs:
           NODE
 
   build:
-    name: Check and package (${{ matrix.os }})
+    name: Check and prepare Marketplace release (${{ matrix.os }})
     needs: verify-tag
     runs-on: ${{ matrix.os }}
     strategy:
@@ -108,18 +108,20 @@ jobs:
       - name: Validate plugin manifest with PI-Desktop devkit
         run: node pi-desktop/packages/plugin-devkit/dist/cli.js check plugin
 
-      - name: Package plugin with PI-Desktop devkit
-        run: node pi-desktop/packages/plugin-devkit/dist/cli.js pack plugin --out plugin/dist
+      - name: Prepare Marketplace release with PI-Desktop devkit
+        run: node pi-desktop/packages/plugin-devkit/dist/cli.js publish plugin --out plugin/dist --ref refs/tags/${{ github.ref_name }} --channel stable
 
-      - name: Upload platform package
+      - name: Upload Marketplace release assets
         uses: actions/upload-artifact@v4
         with:
-          name: piplug-${{ matrix.os }}
-          path: plugin/dist/*.piplug
+          name: marketplace-${{ matrix.os }}
+          path: |
+            plugin/dist/*.piplug
+            plugin/dist/*.submission.json
           if-no-files-found: error
 
   release:
-    name: Create GitHub Release
+    name: Create Marketplace GitHub Release
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -131,18 +133,20 @@ jobs:
           ref: ${{ github.ref }}
           fetch-depth: 1
 
-      - name: Download Linux package
+      - name: Download Marketplace release assets
         uses: actions/download-artifact@v4
         with:
-          name: piplug-ubuntu-latest
+          name: marketplace-ubuntu-latest
           path: release-assets
 
-      - name: Create release and upload plugin package
+      - name: Create publisher release for Marketplace submission
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" release-assets/*.piplug \
+          gh release create "$GITHUB_REF_NAME" \
+            release-assets/*.piplug \
+            release-assets/*.submission.json \
             --verify-tag \
             --title "PI Image Generation $GITHUB_REF_NAME" \
             --generate-notes
