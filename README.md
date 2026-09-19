@@ -5,7 +5,7 @@
 - `action: "generate"` for text-to-image requests;
 - `action: "edit"` for requests with explicitly selected local PNG, JPEG, or WebP references.
 
-The tool sends a Codex Responses-compatible request using the `image_generation` tool. Editing is represented by `action: "edit"` and `input_image` content. `image_variation` is intentionally not implemented because it is not part of the verified Codex contract used here.
+The tool calls an OpenAI-compatible Images API directly: `action: "generate"` uses `POST /images/generations`, while `action: "edit"` uploads explicitly approved local references with multipart `POST /images/edits`. Both operations request one inline base64 PNG. `image_variation` is intentionally outside the supported tool contract.
 
 ## Two hosts, one extension
 
@@ -18,30 +18,34 @@ The plugin does not declare a sandboxed `agentTools` contribution. This avoids r
 
 ## Configuration
 
-The default file is:
+The shared configuration file for both native pi and PI-Desktop is:
 
 ```text
-~/.pi/agent/extensions/pi-image-gen/config.json
+~/.config/pi-image-gen/config.json
 ```
+
+On Windows, this resolves to `C:\Users\<username>\.config\pi-image-gen\config.json`. Existing installations still fall back to the legacy `~/.pi/agent/extensions/pi-image-gen/config.json` path when the shared file does not exist. The shared path takes precedence when both files exist.
 
 Example:
 
 ```json
 {
   "enabled": true,
-  "model": "my-codex-gateway/gpt-5.6",
   "imageModel": "image-2",
-  "userAgent": "my-image-client/1.0",
   "defaultSize": "1024x1024",
   "defaultQuality": "high"
 }
 ```
 
-`model` is an exact `provider/model-id` key resolved through pi's model registry. It selects the endpoint and credentials for the image request and may differ from the active conversation model. If omitted, the active conversation model is used.
+`model` is an optional exact `provider/model-id` binding resolved through the current host's model registry. It is used only to select the provider endpoint and credentials; it is never sent to the Images API. If omitted, the active session's provider binding is used.
 
-`imageModel` is the bare nested image SKU sent as `tools[0].model`, such as `image-2`. If omitted, the selected routing model id is used. This separation allows a gateway conversation model and an image model to be configured independently.
+`imageModel` is required and is sent directly as the Images API `model`, such as `gpt-image-1.5` or a gateway-specific `image-2` SKU.
 
 `userAgent` overrides only the `User-Agent` header of image requests. It is never written into the provider's global model configuration. Header values containing CR/LF or forbidden hop-by-hop/auth keys are rejected. API keys are never stored by this plugin.
+
+For a host-independent configuration, omit `model`. PI-Desktop then injects the active provider/model binding and resolves its endpoint plus API key or OAuth headers through its model registry; native pi does the same with its own registry. The selected provider base URL must expose compatible `/images/generations` and `/images/edits` endpoints. Credentials are never copied into this shared file.
+
+Set `model` only when image requests must use a different configured provider binding from the active conversation. The configured `imageModel` remains the only model identifier sent in generation and edit requests.
 
 The feature is disabled by default because a successful provider request may incur charges. Set `enabled` to `true` only after verifying the selected provider and image SKU.
 

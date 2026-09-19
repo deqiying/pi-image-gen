@@ -31,7 +31,7 @@ export function registerImageGenerationExtension(pi: ExtensionAPI): void {
   (pi.registerTool as unknown as (definition: unknown) => void)({
     name: IMAGE_TOOL_NAME,
     label: "Image generation",
-    description: "Generate a PNG image or edit it using explicitly approved local reference images through a configured Codex Responses image_generation model.",
+    description: "Generate a PNG image or edit it using explicitly approved local reference images through a configured OpenAI-compatible Images API.",
     promptSnippet: "Generate or edit an image with image_gen when the user explicitly requests it.",
     promptGuidelines: [
       "Use image_gen only for an explicit image generation or editing request because the provider operation may incur charges.",

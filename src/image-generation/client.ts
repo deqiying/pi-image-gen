@@ -1,6 +1,6 @@
 import { buildImageRequestHeaders } from "./codex-headers.js";
-import { parseImageGenerationResponse } from "./protocol.js";
-import { IMAGE_TIMEOUT_MS, MAX_ERROR_BYTES, MAX_RESPONSE_BYTES, sanitizeDiagnostic, type ImageGenerationRequest, type ImageGenerationRuntime, type ParsedGeneratedImage } from "./types.js";
+import { buildImageEditRequest, buildImageGenerationRequest, parseImageGenerationResponse } from "./protocol.js";
+import { IMAGE_TIMEOUT_MS, MAX_ERROR_BYTES, MAX_RESPONSE_BYTES, sanitizeDiagnostic, type ImageGenerationRuntime, type NormalizedImageParams, type ParsedGeneratedImage, type PreparedReferenceImage } from "./types.js";
 
 export type ImageFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 export type ImageClientResult =
@@ -15,7 +15,9 @@ async function readBounded(response: Response, maxBytes: number): Promise<Uint8A
   }
   if (!response.body) {
     const bytes = new Uint8Array(await response.arrayBuffer());
-    return bytes.byteLength > maxBytes ? undefined : bytes;
+    if (bytes.byteLength <= maxBytes) return bytes;
+    bytes.fill(0);
+    return undefined;
   }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -26,14 +28,29 @@ async function readBounded(response: Response, maxBytes: number): Promise<Uint8A
       if (part.done) break;
       if (!part.value) continue;
       total += part.value.byteLength;
-      if (total > maxBytes) { await reader.cancel().catch(() => undefined); return undefined; }
+      if (total > maxBytes) {
+        part.value.fill(0);
+        for (const chunk of chunks) chunk.fill(0);
+        await reader.cancel().catch(() => undefined);
+        return undefined;
+      }
       chunks.push(part.value);
     }
-  } finally { reader.releaseLock(); }
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
-  return result;
+    const result = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.byteLength;
+      chunk.fill(0);
+    }
+    return result;
+  } catch (error) {
+    for (const chunk of chunks) chunk.fill(0);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+
 }
 
 function failureReason(status: number): Exclude<ImageClientResult, { ok: true }>["reason"] {
@@ -52,7 +69,9 @@ function payloadMessage(value: unknown): string | undefined {
 
 export async function requestGeneratedImage(args: {
   runtime: ImageGenerationRuntime;
-  body: ImageGenerationRequest;
+  imageModel: string;
+  params: NormalizedImageParams;
+  references: readonly PreparedReferenceImage[];
   userAgent?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -61,14 +80,24 @@ export async function requestGeneratedImage(args: {
   const fetchFn = args.fetchFn ?? globalThis.fetch.bind(globalThis);
   const timeout = AbortSignal.timeout(args.timeoutMs ?? IMAGE_TIMEOUT_MS);
   const signal = args.signal ? AbortSignal.any([args.signal, timeout]) : timeout;
+  const editing = args.params.action === "edit";
+  const multipart = editing ? buildImageEditRequest(args.imageModel, args.params, args.references) : undefined;
+  const body = multipart?.body ?? JSON.stringify(buildImageGenerationRequest(args.imageModel, args.params));
+  const contentType = multipart?.contentType ?? "application/json";
+  const url = editing ? args.runtime.editsUrl : args.runtime.generationUrl;
   let response: Response;
   try {
-    response = await fetchFn(args.runtime.responsesUrl, {
-      method: "POST",
-      headers: buildImageRequestHeaders(args.runtime, args.userAgent),
-      body: JSON.stringify(args.body),
-      signal,
-    });
+    try {
+      response = await fetchFn(url, {
+        method: "POST",
+        headers: buildImageRequestHeaders(args.runtime, args.userAgent, { contentType }),
+        body,
+        redirect: "error",
+        signal,
+      });
+    } finally {
+      multipart?.clear();
+    }
   } catch (error) {
     if (args.signal?.aborted) return { ok: false, reason: "aborted", errorMessage: "Image generation was cancelled." };
     if (timeout.aborted) return { ok: false, reason: "timeout", errorMessage: "Image generation timed out; it was not retried automatically." };
@@ -84,8 +113,13 @@ export async function requestGeneratedImage(args: {
   }
   if (!bytes) return { ok: false, reason: "oversized-response", status: response.status, errorMessage: "Image provider response exceeded the size limit." };
   let payload: unknown;
-  try { payload = JSON.parse(new TextDecoder().decode(bytes)) as unknown; }
-  catch { return { ok: false, reason: "malformed-response", status: response.status, errorMessage: response.ok ? "Image provider returned invalid JSON." : `Image provider rejected the request (HTTP ${response.status}).` }; }
+  try {
+    payload = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    return { ok: false, reason: "malformed-response", status: response.status, errorMessage: response.ok ? "Image provider returned invalid JSON." : `Image provider rejected the request (HTTP ${response.status}).` };
+  } finally {
+    bytes.fill(0);
+  }
   if (!response.ok) {
     const reason = failureReason(response.status);
     return { ok: false, reason, status: response.status, errorMessage: sanitizeDiagnostic(payloadMessage(payload), `Image provider rejected the request (HTTP ${response.status}).`) };

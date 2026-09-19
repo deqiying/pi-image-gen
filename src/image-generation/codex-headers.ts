@@ -2,8 +2,8 @@ import { CODEX_CLIENT_VERSION } from "./headers-constants.js";
 import type { ImageGenerationRuntime } from "./types.js";
 
 const FORBIDDEN = new Set([
-  "host", "cookie", "set-cookie", "connection", "content-length", "transfer-encoding",
-  "proxy-authorization", "x-api-key", "api-key", "chatgpt-account-id",
+  "host", "cookie", "set-cookie", "connection", "content-length", "content-type", "transfer-encoding",
+  "proxy-authorization", "chatgpt-account-id",
 ]);
 
 function setHeader(headers: Record<string, string>, name: string, value: string): void {
@@ -11,14 +11,14 @@ function setHeader(headers: Record<string, string>, name: string, value: string)
   headers[name] = value;
 }
 
-export function buildImageRequestHeaders(runtime: ImageGenerationRuntime, userAgent?: string): Record<string, string> {
+export function buildImageRequestHeaders(runtime: ImageGenerationRuntime, userAgent?: string, options: { contentType?: string } = {}): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [key, raw] of Object.entries(runtime.headers ?? {})) {
     if (raw === null || typeof raw !== "string" || FORBIDDEN.has(key.toLowerCase()) || /[\r\n]/.test(raw)) continue;
     headers[key] = raw;
   }
   setHeader(headers, "accept", "application/json");
-  setHeader(headers, "content-type", "application/json");
+  if (options.contentType) setHeader(headers, "content-type", options.contentType);
   if (runtime.apiKey) setHeader(headers, "authorization", `Bearer ${runtime.apiKey}`);
   if (runtime.api === "openai-codex-responses") {
     setHeader(headers, "originator", "pi");

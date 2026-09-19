@@ -12,7 +12,8 @@ import {
   type LoadedImageConfig,
 } from "./types.js";
 
-export const DEFAULT_CONFIG_PATH = join(homedir(), ".pi", "agent", "extensions", "pi-image-gen", "config.json");
+export const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "pi-image-gen", "config.json");
+export const LEGACY_CONFIG_PATH = join(homedir(), ".pi", "agent", "extensions", "pi-image-gen", "config.json");
 
 const DEFAULT_CONFIG: ImageConfig = {
   enabled: false,
@@ -43,19 +44,35 @@ function validUserAgent(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= MAX_USER_AGENT_CHARS && !/[\r\n]/.test(value);
 }
 
-export function loadImageConfig(configPath = DEFAULT_CONFIG_PATH): LoadedImageConfig {
+export function loadImageConfig(
+  configPath = DEFAULT_CONFIG_PATH,
+  fallbackConfigPath = configPath === DEFAULT_CONFIG_PATH ? LEGACY_CONFIG_PATH : undefined,
+): LoadedImageConfig {
   const config: ImageConfig = { ...DEFAULT_CONFIG };
   const warnings: string[] = [];
   let valid = true;
   let source: string | undefined;
   let raw: unknown;
+  const candidates = fallbackConfigPath ? [configPath, fallbackConfigPath] : [configPath];
+  for (const candidate of candidates) {
+    try {
+      if (statSync(candidate).isFile()) {
+        source = candidate;
+        break;
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
+      warnings.push(`Ignoring image-gen configuration: ${error instanceof Error ? error.message : String(error)}`);
+      return { config, warnings, valid: false };
+    }
+  }
+  if (!source) return { config, warnings, valid };
   try {
-    if (!statSync(configPath).isFile()) return { config, warnings, valid };
-    source = configPath;
-    raw = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
+    raw = JSON.parse(readFileSync(source, "utf8")) as unknown;
   } catch (error) {
     warnings.push(`Ignoring image-gen configuration: ${error instanceof Error ? error.message : String(error)}`);
-    return { config, warnings, valid: false };
+    return { config, source, warnings, valid: false };
   }
   if (!isRecord(raw)) {
     warnings.push("Ignoring image-gen configuration: expected a JSON object.");
@@ -77,7 +94,7 @@ export function loadImageConfig(configPath = DEFAULT_CONFIG_PATH): LoadedImageCo
   if (raw.imageModel !== undefined) {
     if (raw.imageModel === null) config.imageModel = undefined;
     else if (validBareModel(raw.imageModel)) config.imageModel = raw.imageModel.trim();
-    else { warnings.push("imageModel must be a non-empty bare model id."); valid = false; }
+    else { warnings.push("imageModel must be a non-empty image model id."); valid = false; }
   }
   if (raw.userAgent !== undefined) {
     if (raw.userAgent === null) config.userAgent = undefined;

@@ -5,7 +5,6 @@ export const IMAGE_MIME_TYPE = "image/png" as const;
 export const IMAGE_SIZES = ["auto", "1024x1024", "1536x1024", "1024x1536"] as const;
 export const IMAGE_QUALITIES = ["auto", "low", "medium", "high"] as const;
 export const IMAGE_ACTIONS = ["generate", "edit"] as const;
-export const SUPPORTED_RESPONSES_APIS = ["openai-responses", "openai-codex-responses"] as const;
 
 export const MAX_PROMPT_CHARS = 20_000;
 export const MAX_PATH_CHARS = 4_096;
@@ -23,11 +22,12 @@ export const MAX_IMAGE_DIMENSION = 100_000;
 export type ImageSize = (typeof IMAGE_SIZES)[number];
 export type ImageQuality = (typeof IMAGE_QUALITIES)[number];
 export type ImageAction = (typeof IMAGE_ACTIONS)[number];
-export type ResponsesApi = (typeof SUPPORTED_RESPONSES_APIS)[number];
 
 export type ImageConfig = {
   enabled: boolean;
+  /** Optional provider/model binding used only to resolve an endpoint and credentials. */
   model: string | undefined;
+  /** Image model sent directly to the Images API. */
   imageModel: string | undefined;
   userAgent: string | undefined;
   defaultSize: ImageSize;
@@ -78,10 +78,11 @@ export type ResolvedAuth =
 
 export type ImageGenerationRuntime = {
   provider: string;
-  api: ResponsesApi;
-  model: string;
+  api: string;
+  providerModel: string;
   baseUrl: string;
-  responsesUrl: string;
+  generationUrl: string;
+  editsUrl: string;
   apiKey?: string;
   headers?: Record<string, string | null>;
   sessionId?: string;
@@ -98,33 +99,24 @@ export type PreparedReferenceImage = {
   bytes: Buffer;
 };
 
-export type ImageGenerationRequest = {
+export type ImageCreateRequest = {
   model: string;
-  store: false;
-  stream: false;
-  parallel_tool_calls: false;
-  input: Array<{
-    role: "user";
-    content: Array<
-      | { type: "input_text"; text: string }
-      | { type: "input_image"; image_url: string; detail: "auto" }
-    >;
-  }>;
-  tools: Array<{
-    type: "image_generation";
-    model: string;
-    action: ImageAction;
-    size: ImageSize;
-    quality: ImageQuality;
-    output_format: "png";
-  }>;
-  tool_choice: { type: "image_generation" };
+  prompt: string;
+  n: 1;
+  size?: ImageSize;
+  quality?: ImageQuality;
+  output_format?: "png";
+  response_format?: "b64_json";
+};
+
+export type ImageEditRequest = {
+  body: Uint8Array<ArrayBuffer>;
+  contentType: string;
+  clear: () => void;
 };
 
 export type ParsedGeneratedImage = {
   bytes: Buffer;
-  imageCallId: string;
-  responseId?: string;
   revisedPrompt?: string;
   width: number;
   height: number;
@@ -133,10 +125,9 @@ export type ParsedGeneratedImage = {
 export type ImageGenerationDetails = {
   artifactPath: string;
   outputPath?: string;
-  routingModel: string;
+  providerModel: string;
   imageModel: string;
   imageCallId: string;
-  responseId?: string;
   mimeType: typeof IMAGE_MIME_TYPE;
   byteCount: number;
   width: number;
@@ -207,7 +198,7 @@ export function isImageGenerationDetails(value: unknown): value is ImageGenerati
   return (
     typeof value.artifactPath === "string" && value.artifactPath.length > 0 &&
     (value.outputPath === undefined || typeof value.outputPath === "string") &&
-    typeof value.routingModel === "string" && typeof value.imageModel === "string" &&
+    typeof value.providerModel === "string" && typeof value.imageModel === "string" &&
     typeof value.imageCallId === "string" && value.mimeType === IMAGE_MIME_TYPE &&
     typeof value.byteCount === "number" && Number.isInteger(value.byteCount) && value.byteCount > 0 && value.byteCount <= MAX_GENERATED_BYTES &&
     typeof value.width === "number" && Number.isInteger(value.width) && value.width > 0 && value.width <= MAX_IMAGE_DIMENSION &&

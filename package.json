@@ -3,7 +3,7 @@
   "version": "0.1.4",
   "private": false,
   "type": "module",
-  "description": "Native pi agent image generation and editing through Codex Responses image_generation.",
+  "description": "Native pi agent image generation and editing through OpenAI-compatible Images APIs.",
   "license": "MIT",
   "engines": {
     "node": ">=22.19.0"
