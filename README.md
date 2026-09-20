@@ -7,6 +7,18 @@
 
 The tool calls an OpenAI-compatible Images API directly: `action: "generate"` uses `POST /images/generations`, while `action: "edit"` uploads explicitly approved local references with multipart `POST /images/edits`. Both operations request one inline base64 PNG. `image_variation` is intentionally outside the supported tool contract.
 
+## Install
+
+Native pi:
+
+```bash
+pi install npm:pi-image-gen
+```
+
+The npm package ships the extension source under `src/` and declares it through `pi.extensions`, so pi loads it with its own TypeScript loader: no build step and no runtime dependency to install.
+
+For the PI-Desktop plugin path, see [Two hosts, one extension](#two-hosts-one-extension).
+
 ## Two hosts, one extension
 
 The same `src/index.ts` module is exposed through:

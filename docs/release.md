@@ -59,3 +59,34 @@ git push origin main && git push origin v0.1.1
 GitHub Actions 不直接调用插件中心提交 API。官方发布接口要求已登录的浏览器会话、CSRF 和 Origin 校验，且不支持 Personal Access Token；Release 创建后，需要登录 PI-Desktop Marketplace 发布者控制台，提交 Release 中的 `.submission.json`。插件中心会重新解析 tag、commit 和 Release 资产并执行审核。
 
 workflow 不执行 `npm publish`，也不需要 npm 发布 token。`PI_DESKTOP_REF` 用于锁定构建所依据的 PI-Desktop devkit 版本；升级 PI-Desktop 时应同步调整该值并重新验证 workflow。
+
+## npm 发布
+
+npm 包与 Marketplace `.piplug` 是两条独立通道，共用 `package.json`、`package-lock.json` 和 `manifest.json` 的同一个版本号。首个版本走本地手动发布，workflow 不引入 npm token，也不执行 `npm publish`。
+
+发布前：
+
+```bash
+npm ci
+npm run check
+npm publish --dry-run           # 核对 tarball 内容
+npm view pi-image-gen version   # 确认注册表上的版本与本地一致
+```
+
+发布：
+
+```bash
+npm login
+npm publish                     # 非 scoped 包默认 public
+```
+
+tarball 只包含 `src/` 下的非测试源码、`main.cjs`、`manifest.json`、`package.json`、`README.md` 与 `LICENSE`；`.github/`、`scripts/`、`docs/`、`tsconfig.json` 和 `src/**/*.test.ts` 由 `.npmignore` 排除。
+
+安装验证：
+
+```bash
+pi install npm:pi-image-gen
+pi list
+```
+
+后续版本与 Marketplace 一起走 `scripts/release.sh`，在同一个 `v<version>` tag 上执行一次 `npm publish`，两条通道的版本号保持一致。改为 CI 发布时，再补一个使用 npm granular automation token 的 job。

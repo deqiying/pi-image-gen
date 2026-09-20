@@ -4,7 +4,24 @@
   "private": false,
   "type": "module",
   "description": "Native pi agent image generation and editing through OpenAI-compatible Images APIs.",
-  "license": "MIT",
+  "license": "Apache-2.0",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "pi-coding-agent",
+    "image-generation",
+    "images-api",
+    "openai-compatible"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deqiying/pi-image-gen.git"
+  },
+  "homepage": "https://github.com/deqiying/pi-image-gen#readme",
+  "bugs": {
+    "url": "https://github.com/deqiying/pi-image-gen/issues"
+  },
   "engines": {
     "node": ">=22.19.0"
   },

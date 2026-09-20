@@ -17,7 +17,7 @@
     }
   },
   "author": "deqiying",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "main": "main.cjs",
   "contributes": {
     "agentExtensions": [

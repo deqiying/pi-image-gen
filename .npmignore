@@ -3,3 +3,10 @@ node_modules/
 dist/
 coverage/
 *.tgz
+
+# CI 配置、发布脚本与流程文档属于仓库内部，不进入 npm 包。
+.github/
+scripts/
+docs/
+tsconfig.json
+src/**/*.test.ts
