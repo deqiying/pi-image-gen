@@ -1,5 +1,5 @@
 {
-  "name": "pi-image-gen",
+  "name": "@deqiying/pi-image-gen",
   "version": "0.1.5",
   "private": false,
   "type": "module",
@@ -21,6 +21,9 @@
   "homepage": "https://github.com/deqiying/pi-image-gen#readme",
   "bugs": {
     "url": "https://github.com/deqiying/pi-image-gen/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=22.19.0"

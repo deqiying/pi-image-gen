@@ -62,7 +62,7 @@ workflow 不执行 `npm publish`，也不需要 npm 发布 token。`PI_DESKTOP_R
 
 ## npm 发布
 
-npm 包与 Marketplace `.piplug` 是两条独立通道，共用 `package.json`、`package-lock.json` 和 `manifest.json` 的同一个版本号。首个版本走本地手动发布，workflow 不引入 npm token，也不执行 `npm publish`。
+npm 包名为 `@deqiying/pi-image-gen`（scoped 公开包），与 Marketplace `.piplug` 是两条独立通道，共用 `package.json`、`package-lock.json` 和 `manifest.json` 的同一个版本号。首个版本走本地手动发布，workflow 不引入 npm token，也不执行 `npm publish`。
 
 发布前：
 
@@ -70,14 +70,14 @@ npm 包与 Marketplace `.piplug` 是两条独立通道，共用 `package.json`�
 npm ci
 npm run check
 npm publish --dry-run           # 核对 tarball 内容
-npm view pi-image-gen version   # 确认注册表上的版本与本地一致
+npm view @deqiying/pi-image-gen version   # 确认注册表上的版本与本地一致
 ```
 
 发布：
 
 ```bash
 npm login
-npm publish                     # 非 scoped 包默认 public
+npm publish                     # scoped 包的公开访问由 package.json 的 publishConfig.access 声明
 ```
 
 tarball 只包含 `src/` 下的非测试源码、`main.cjs`、`manifest.json`、`package.json`、`README.md` 与 `LICENSE`；`.github/`、`scripts/`、`docs/`、`tsconfig.json` 和 `src/**/*.test.ts` 由 `.npmignore` 排除。
@@ -85,7 +85,7 @@ tarball 只包含 `src/` 下的非测试源码、`main.cjs`、`manifest.json`、
 安装验证：
 
 ```bash
-pi install npm:pi-image-gen
+pi install npm:@deqiying/pi-image-gen
 pi list
 ```
 

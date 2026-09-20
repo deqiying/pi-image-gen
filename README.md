@@ -1,6 +1,6 @@
 # PI Image Generation
 
-`pi-image-gen` adds one native pi agent tool named `image_gen`. It supports:
+`@deqiying/pi-image-gen` adds one native pi agent tool named `image_gen`. It supports:
 
 - `action: "generate"` for text-to-image requests;
 - `action: "edit"` for requests with explicitly selected local PNG, JPEG, or WebP references.
@@ -12,7 +12,7 @@ The tool calls an OpenAI-compatible Images API directly: `action: "generate"` us
 Native pi:
 
 ```bash
-pi install npm:pi-image-gen
+pi install npm:@deqiying/pi-image-gen
 ```
 
 The npm package ships the extension source under `src/` and declares it through `pi.extensions`, so pi loads it with its own TypeScript loader: no build step and no runtime dependency to install.
