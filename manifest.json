@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "deqiying.pi-image-gen",
   "name": "PI Image Generation",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "A native pi agent tool for direct OpenAI-compatible image generation and editing APIs.",
   "i18n": {
     "en": {
