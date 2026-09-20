@@ -65,7 +65,7 @@ Marketplace 提交与 npm 发布是两条独立通道，同一次标签推送会
 
 npm 包名为 `@deqiying/pi-image-gen`（scoped 公开包），与 Marketplace `.piplug` 是两条独立通道，共用 `package.json`、`package-lock.json` 和 `manifest.json` 的同一个版本号。0.1.5 为首个版本，在接入 workflow 之前本地手动发布；此后随 `v*` tag 由 CI 发布。
 
-CI 发布由 `publish-npm` job 负责：只申请 `id-token: write`，通过 GitHub OIDC（trusted publishing）认证，执行 `npm publish --provenance`，不使用长期 npm token。该 job 依赖 `verify-tag`，因此 npm 版本与 tag、Marketplace 版本三者一致；若该版本已存在于 npm 则跳过而不失败。固定的 Node 版本自带 npm 10，不支持 trusted publishing，因此该 job 先安装当前 npm 并校验 `npm trust` 可用。
+CI 发布由 `publish-npm` job 负责：只申请 `id-token: write`，通过 GitHub OIDC（trusted publishing）认证，执行 `npm publish --provenance`，不使用长期 npm token。该 job 依赖 `verify-tag`，因此 npm 版本与 tag、Marketplace 版本三者一致；若该版本已存在于 npm 则跳过而不失败。固定的 Node 版本自带 npm 10，不支持 trusted publishing，而 npm 12 要求更高的 Node 版本，因此该 job 在 `npm trust` 不可用时安装 npm 11 并重新校验。
 
 首次启用前需在 npm 上一次性注册可信发布者，workflow 文件名必须与仓库中的实际文件名一致：
 

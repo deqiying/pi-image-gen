@@ -170,12 +170,15 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      # The pinned Node version bundles npm 10, which predates trusted publishing support.
-      - name: Install current npm and verify trusted publishing support
+      # npm 12 requires a newer Node than the pinned one, and the bundled npm 10 predates trusted
+      # publishing, so install npm 11, the last major that still supports the pinned Node.
+      - name: Ensure npm supports trusted publishing
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global npm@latest
+          if ! npm trust --help >/dev/null 2>&1; then
+            npm install --global "npm@^11"
+          fi
           npm --version
           npm trust --help >/dev/null
 
