@@ -55,27 +55,36 @@ git push origin main && git push origin v0.1.1
 3. 从固定版本的 PI-Desktop 源码构建 `@pi-desktop/plugin-devkit`，调用其 `check` 和 `publish` 协议；
 4. `publish` 使用当前 tag 的 `refs/tags/<tag>` 作为可复现来源，生成 `deqiying.pi-image-gen-<version>.piplug` 和对应的 `.submission.json`；
 5. 将 Ubuntu 构建生成的 `.piplug` 与 `.submission.json` 一起上传到 GitHub Release。
+6. `publish-npm` job 通过 GitHub OIDC 向 npm 发布同一版本，版本已存在时跳过。
 
 GitHub Actions 不直接调用插件中心提交 API。官方发布接口要求已登录的浏览器会话、CSRF 和 Origin 校验，且不支持 Personal Access Token；Release 创建后，需要登录 PI-Desktop Marketplace 发布者控制台，提交 Release 中的 `.submission.json`。插件中心会重新解析 tag、commit 和 Release 资产并执行审核。
 
-workflow 不执行 `npm publish`，也不需要 npm 发布 token。`PI_DESKTOP_REF` 用于锁定构建所依据的 PI-Desktop devkit 版本；升级 PI-Desktop 时应同步调整该值并重新验证 workflow。
+Marketplace 提交与 npm 发布是两条独立通道，同一次标签推送会同时触发。`PI_DESKTOP_REF` 用于锁定构建所依据的 PI-Desktop devkit 版本；升级 PI-Desktop 时应同步调整该值并重新验证 workflow。
 
 ## npm 发布
 
-npm 包名为 `@deqiying/pi-image-gen`（scoped 公开包），与 Marketplace `.piplug` 是两条独立通道，共用 `package.json`、`package-lock.json` 和 `manifest.json` 的同一个版本号。首个版本走本地手动发布，workflow 不引入 npm token，也不执行 `npm publish`。
+npm 包名为 `@deqiying/pi-image-gen`（scoped 公开包），与 Marketplace `.piplug` 是两条独立通道，共用 `package.json`、`package-lock.json` 和 `manifest.json` 的同一个版本号。0.1.5 为首个版本，在接入 workflow 之前本地手动发布；此后随 `v*` tag 由 CI 发布。
 
-发布前：
+CI 发布由 `publish-npm` job 负责：只申请 `id-token: write`，通过 GitHub OIDC（trusted publishing）认证，执行 `npm publish --provenance`，不使用长期 npm token。该 job 依赖 `verify-tag`，因此 npm 版本与 tag、Marketplace 版本三者一致；若该版本已存在于 npm 则跳过而不失败。固定的 Node 版本自带 npm 10，不支持 trusted publishing，因此该 job 先安装当前 npm 并校验 `npm trust` 可用。
+
+首次启用前需在 npm 上一次性注册可信发布者，workflow 文件名必须与仓库中的实际文件名一致：
+
+```bash
+npm trust github @deqiying/pi-image-gen \
+  --file release.yml \
+  --repo deqiying/pi-image-gen \
+  --allow-publish
+```
+
+注册需要浏览器认证；注册结果用 `npm trust list @deqiying/pi-image-gen` 复核，等价操作也可在 npmjs.com 包页面的 Settings → Trusted Publisher 完成。
+
+回退或临时发布时仍可在本地手动执行：
 
 ```bash
 npm ci
 npm run check
 npm publish --dry-run           # 核对 tarball 内容
 npm view @deqiying/pi-image-gen version   # 确认注册表上的版本与本地一致
-```
-
-发布：
-
-```bash
 npm login
 npm publish                     # scoped 包的公开访问由 package.json 的 publishConfig.access 声明
 ```
@@ -89,4 +98,4 @@ pi install npm:@deqiying/pi-image-gen
 pi list
 ```
 
-后续版本与 Marketplace 一起走 `scripts/release.sh`，在同一个 `v<version>` tag 上执行一次 `npm publish`，两条通道的版本号保持一致。改为 CI 发布时，再补一个使用 npm granular automation token 的 job。
+后续版本与 Marketplace 一起走 `scripts/release.sh`，推送同一个 `v<version>` tag 即同时触发 `publish-npm` job 与 Marketplace 构建，两条通道版本号保持一致。

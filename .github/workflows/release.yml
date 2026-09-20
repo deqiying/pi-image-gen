@@ -1,4 +1,4 @@
-name: Release Marketplace Plugin
+name: Release
 
 on:
   push:
@@ -150,3 +150,53 @@ jobs:
             --verify-tag \
             --title "PI Image Generation $GITHUB_REF_NAME" \
             --generate-notes
+
+  publish-npm:
+    name: Publish to npm
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Trusted publishing authenticates through GitHub OIDC, so no long-lived npm token is stored.
+      id-token: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # The pinned Node version bundles npm 10, which predates trusted publishing support.
+      - name: Install current npm and verify trusted publishing support
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global npm@latest
+          npm --version
+          npm trust --help >/dev/null
+
+      - name: Skip when this version is already published
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          package="$(node -p "require('./package.json').name")"
+          if npm view "${package}@${version}" version >/dev/null 2>&1; then
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+            echo "${package}@${version} is already on npm; skipping publish."
+          else
+            echo "skip=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.check.outputs.skip == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # access=public comes from package.json publishConfig; provenance needs the id-token above.
+          npm publish --provenance
