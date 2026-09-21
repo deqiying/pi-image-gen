@@ -6,7 +6,7 @@ import { prepareExplicitOutputPath, saveCanonicalImage, copyImageToExplicitPath 
 import { clearPreparedReferences, prepareReferenceImages } from "./references.js";
 import { normalizeImageParams, validateImageRequest } from "./protocol.js";
 import { resolveImageRuntime } from "./runtime.js";
-import { IMAGE_MIME_TYPE, ImageGenerationError, sanitizeDiagnostic, type ActiveImageTransport, type ImageGenerationContext, type ImageGenerationResult, type ImageGenerationRuntime, type ImageToolParams } from "./types.js";
+import { IMAGE_MIME_TYPE, ImageGenerationError, sanitizeDiagnostic, type ImageGenerationContext, type ImageGenerationResult, type ImageToolParams } from "./types.js";
 
 export type ImageExecutionDependencies = {
   loadConfig: typeof loadImageConfig;
@@ -26,11 +26,6 @@ function getSessionId(ctx: ImageGenerationContext): string {
   try { return ctx.sessionManager.getSessionId(); } catch { return "session"; }
 }
 
-/** Model a given transport runs on: the Responses path declares toolModel when it is set. */
-function effectiveImageModel(runtime: ImageGenerationRuntime, imageModel: string, transport: ActiveImageTransport): string {
-  return transport === "responses" ? runtime.toolModel ?? imageModel : imageModel;
-}
-
 export async function executeImageGeneration(args: {
   params: ImageToolParams;
   toolCallId: string;
@@ -44,13 +39,16 @@ export async function executeImageGeneration(args: {
   const loaded = deps.loadConfig();
   if (!loaded.valid) throw new ImageGenerationError("config", loaded.warnings[0] ?? "Image generation configuration is invalid.");
   if (!loaded.config.enabled) throw new ImageGenerationError("config", "Image generation is disabled. Set enabled to true in the plugin configuration.");
+
+  // A valid configuration can still carry notices (removed or unknown keys); they travel with the
+  // result so an upgraded configuration explains itself instead of failing silently.
+  const configNotice = loaded.warnings[0];
   const params = normalizeImageParams(args.params as unknown as Record<string, unknown>, { size: loaded.config.defaultSize, quality: loaded.config.defaultQuality });
   const imageModel = loaded.config.imageModel?.trim();
-  if (!imageModel) throw new ImageGenerationError("config", "Direct Images API requests require imageModel in the plugin configuration.");
+  if (!imageModel) throw new ImageGenerationError("config", `imageModel is required in the plugin configuration.${configNotice ? ` ${configNotice}` : ""}`);
   const runtime = await deps.resolveRuntime(args.ctx, loaded.config);
-  // Validate the model the primary transport actually sends: the Responses path runs on
-  // toolModel and would otherwise inherit DALL-E-only restrictions from imageModel.
-  validateImageRequest(effectiveImageModel(runtime, imageModel, runtime.transport), params);
+  // Both transports send imageModel, so a single validation covers the outgoing request.
+  validateImageRequest(imageModel, params);
   // The debug log is best effort: a write failure must never lose an already paid result.
   let debugWarning: string | undefined;
   const onDebug = loaded.config.debug
@@ -75,11 +73,10 @@ export async function executeImageGeneration(args: {
       ...(onDebug ? { onDebug } : {}),
     });
     if (!response.ok) {
-      const failureMessage = debugWarning ? `${response.errorMessage} Debug log unavailable: ${debugWarning}` : response.errorMessage;
+      const notices = [configNotice, debugWarning ? `Debug log unavailable: ${debugWarning}` : undefined].filter(Boolean).join(" ");
+      const failureMessage = notices ? `${response.errorMessage} ${notices}` : response.errorMessage;
       throw new ImageGenerationError(response.reason === "no-image" ? "no-image" : response.reason, failureMessage);
     }
-    // Report the model that actually produced the image, not the Images-API default.
-    const usedImageModel = effectiveImageModel(runtime, imageModel, response.transport);
     generated = response.image.bytes;
     const artifactPath = await saveCanonicalImage({ bytes: generated, agentDir: deps.agentDir(), sessionId: getSessionId(args.ctx), imageCallId: args.toolCallId });
     let outputPath: string | undefined;
@@ -91,7 +88,7 @@ export async function executeImageGeneration(args: {
       artifactPath,
       ...(outputPath ? { outputPath } : {}),
       providerModel: `${runtime.provider}/${runtime.providerModel}`,
-      imageModel: usedImageModel,
+      imageModel,
       imageCallId: args.toolCallId,
       mimeType: IMAGE_MIME_TYPE,
       byteCount: generated.length,
@@ -106,6 +103,7 @@ export async function executeImageGeneration(args: {
       `${params.action === "edit" ? "Edited" : "Generated"} PNG image (${details.width}x${details.height}).`,
       `Artifact: ${details.artifactPath}`,
       ...(details.outputPath ? [`Copied to: ${details.outputPath}`] : []),
+      ...(configNotice ? [`Configuration notice: ${configNotice}`] : []),
       ...(debugWarning ? [`Debug log unavailable: ${debugWarning}`] : []),
     ];
     return { details, text: lines.join("\n") };

@@ -21,10 +21,8 @@ export const LEGACY_CONFIG_PATH = join(homedir(), ".pi", "agent", "extensions", 
 
 const DEFAULT_CONFIG: ImageConfig = {
   enabled: false,
-  model: undefined,
   imageModel: undefined,
   textModel: undefined,
-  toolModel: undefined,
   userAgent: undefined,
   transport: "auto",
   partialImages: DEFAULT_PARTIAL_IMAGES,
@@ -35,17 +33,18 @@ const DEFAULT_CONFIG: ImageConfig = {
   defaultSize: "auto",
   defaultQuality: "auto",
 };
-const KNOWN_FIELDS = new Set(["enabled", "model", "imageModel", "textModel", "toolModel", "userAgent", "transport", "partialImages", "stream", "retryOnTransportFailure", "debug", "defaultSize", "defaultQuality"]);
+const KNOWN_FIELDS = new Set(["enabled", "imageModel", "textModel", "userAgent", "transport", "partialImages", "stream", "retryOnTransportFailure", "debug", "defaultSize", "defaultQuality"]);
+/**
+ * Keys that selected a routing target before provider selection became automatic. They are
+ * reported with a targeted warning so an existing configuration explains itself after upgrade.
+ */
+const REMOVED_FIELDS = new Map<string, string>([
+  ["model", "The model routing key was removed: textModel now selects the provider binding, so delete it."],
+  ["toolModel", "The toolModel key was removed: the image_generation tool always declares imageModel now, so move the value to imageModel."],
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function validModelSpec(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  const trimmed = value.trim();
-  const slash = trimmed.indexOf("/");
-  return slash > 0 && slash < trimmed.length - 1 && trimmed.length <= MAX_MODEL_CHARS && !/[\s*?\[\]{}]/.test(trimmed);
 }
 
 function validBareModel(value: unknown): value is string {
@@ -90,30 +89,28 @@ export function loadImageConfig(
     warnings.push("Ignoring image-gen configuration: expected a JSON object.");
     return { config, source, warnings, valid: false };
   }
+  // Key-level notices are collected separately so a field error still reaches the caller first:
+  // service.ts reports warnings[0] when the configuration is invalid.
+  const keyWarnings: string[] = [];
   for (const key of Object.keys(raw)) {
-    if (!KNOWN_FIELDS.has(key)) warnings.push(`Ignoring unknown configuration field: ${key}.`);
+    const removal = REMOVED_FIELDS.get(key);
+    if (removal) keyWarnings.push(removal);
+    else if (!KNOWN_FIELDS.has(key)) keyWarnings.push(`Ignoring unknown configuration field: ${key}.`);
   }
 
   if (raw.enabled !== undefined) {
     if (typeof raw.enabled === "boolean") config.enabled = raw.enabled;
     else { warnings.push("enabled must be a boolean."); valid = false; }
   }
-  if (raw.model !== undefined) {
-    if (raw.model === null) config.model = undefined;
-    else if (validModelSpec(raw.model)) config.model = raw.model.trim();
-    else { warnings.push("model must be an exact provider/model-id string."); valid = false; }
-  }
   if (raw.imageModel !== undefined) {
     if (raw.imageModel === null) config.imageModel = undefined;
     else if (validBareModel(raw.imageModel)) config.imageModel = raw.imageModel.trim();
     else { warnings.push("imageModel must be a non-empty image model id."); valid = false; }
   }
-  for (const key of ["textModel", "toolModel"] as const) {
-    const value = raw[key];
-    if (value === undefined) continue;
-    if (value === null) config[key] = undefined;
-    else if (validBareModel(value)) config[key] = value.trim();
-    else { warnings.push(`${key} must be a non-empty model id.`); valid = false; }
+  if (raw.textModel !== undefined) {
+    if (raw.textModel === null) config.textModel = undefined;
+    else if (validBareModel(raw.textModel)) config.textModel = raw.textModel.trim();
+    else { warnings.push("textModel must be a non-empty model id."); valid = false; }
   }
   if (raw.userAgent !== undefined) {
     if (raw.userAgent === null) config.userAgent = undefined;
@@ -143,8 +140,10 @@ export function loadImageConfig(
     if (typeof raw.defaultQuality === "string" && (IMAGE_QUALITIES as readonly string[]).includes(raw.defaultQuality)) config.defaultQuality = raw.defaultQuality as ImageQuality;
     else { warnings.push(`defaultQuality must be one of ${IMAGE_QUALITIES.join(", ")}.`); valid = false; }
   }
+  // Key notices stay behind field errors so an invalid configuration still reports its cause.
+  warnings.push(...keyWarnings);
   if (!valid) config.enabled = false;
   return { config, source, warnings, valid };
 }
 
-export const _configTest = { validModelSpec, validBareModel, validUserAgent };
+export const _configTest = { validBareModel, validUserAgent };

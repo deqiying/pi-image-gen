@@ -57,24 +57,31 @@ Example:
 }
 ```
 
-`model` is an optional exact `provider/model-id` binding resolved through the current host's model registry. It is used only to select the provider endpoint and credentials; it is never sent as the image model. If omitted, the active session's provider binding is used.
+`imageModel` is required and is the only image model the plugin sends: it is the `model` of the Images API request and, on the Responses transport, the `model` declared inside the built-in `image_generation` tool (`tools[0].model`). Examples are `gpt-image-2`, `gpt-image-1.5`, or a gateway-specific `image-2` SKU.
 
-`imageModel` is required and is the default image model for both transports: the `model` of the Responses `image_generation` tool, and the request `model` of the Images API. Examples are `gpt-image-2`, `gpt-image-1.5`, or a gateway-specific `image-2` SKU.
-
-`textModel` and `toolModel` override the two model roles of the Responses transport:
+`textModel` overrides the top-level Responses `model` and, with it, decides which provider answers:
 
 ```json
 {
   "enabled": true,
   "imageModel": "gpt-image-2",
-  "textModel": "gpt-5.4",
-  "toolModel": "gpt-image-1.5"
+  "textModel": "gpt-5.4"
 }
 ```
 
-- `textModel` is the top-level Responses `model` that hosts the built-in image tool. It must be a Responses-capable text model: OpenAI-compatible gateways reject a body whose top-level model is an image SKU (`gpt-image-2`) while it declares `image_generation`. Defaults to the bound `model`, or to the active session model when `model` is unset.
-- `toolModel` is the image model declared by the tool itself (`tools[0].model`). `tool_choice` has no model field — it only selects the built-in tool (`{ "type": "image_generation" }`) — so this is the only place the image model is expressed on the Responses transport. Defaults to `imageModel`.
-- Both keys affect the Responses transport only; the Images API and its capability fallback always send `imageModel`. A `toolModel` set to a DALL-E SKU can never be used as the tool and is ignored, so the Images request keeps sending `imageModel`.
+- It must be a Responses-capable text model: an OpenAI-compatible gateway rejects a body whose top-level model is an image SKU (`gpt-image-2`) while it declares `image_generation`.
+- It is a bare model id as the registry lists it. A `provider/model-id` string is not a routing key: it matches no catalogue entry, so only rule 3 applies and that literal id is sent as the top-level model.
+- It defaults to the active session model id.
+
+The provider binding is selected by searching the host's model registry for that model:
+
+1. The active session provider answers while its catalogue offers `textModel`. With no `textModel` the session model *is* the host model, so this rule always holds and the session provider keeps answering.
+2. Otherwise an available provider whose catalogue offers `textModel` answers, with its endpoint and its API key or OAuth headers. Providers whose API id is `openai-responses` or `openai-codex-responses` are tried first, in catalogue order, because a `/responses` endpoint hosts the built-in image tool while a chat-completions gateway may serve no `/images/*` route at all. The first entry in that preferred group wins, and the remaining providers are used only when no Responses-capable provider offers the model.
+3. If no available provider offers it, the session provider answers and `textModel` is sent as configured.
+
+Candidates come from the registry's available set, so only providers with configured credentials are considered; a host whose registry cannot be enumerated always stays on the session provider. The selected provider must expose either `/responses` with the `image_generation` tool or compatible `/images/generations` and `/images/edits` endpoints, and must serve the configured `imageModel`: the whole request goes to that one endpoint, so a text model from one provider cannot be combined with an image model from another. `transport` picks the request contract, and pinning it to `images` also drops the `/responses` preference because that contract is then fixed. The debug log records which rule fired as `bindingReason` (`current-provider`, `matched-provider`, or `session-fallback`).
+
+`model` and `toolModel` no longer exist. `textModel` selects the provider as described above, and the `image_generation` tool always declares `imageModel`. A configuration that still sets either key loads, reports one notice naming the replacement alongside the next image result, and ignores that key.
 
 `transport` selects the request contract:
 
@@ -90,7 +97,7 @@ The Responses endpoint is resolved from the provider base URL: a ChatGPT/Codex b
 
 `retryOnTransportFailure` defaults to `false` and controls whether one automatic retry is attempted after a transport-level failure. It is off by default because the gateway may already have finished the generation and billed the upstream provider, which makes the retry a duplicate charge, and because a retry made while the upstream generation is still running tends to hit the same problem. Only transport-level failures qualify: an interrupted connection, a response with no provider verdict, or a response stream that ends before a final result. Authentication, rate limits, parameter rejections, cancellation, the plugin's own timeout, and oversized responses are never retried.
 
-`debug` defaults to `false` and, when enabled, appends one JSONL line of request metadata per generation to `<pi agent dir>/pi-image-gen-debug.jsonl` (`~/.pi/agent/pi-image-gen-debug.jsonl`). A record holds the transport, whether the request streamed, the endpoint, provider, model roles, action/size/quality, the number of partial previews requested, the reference image count, the result status and failure reason, the HTTP status, the total / response-header / first-event / last-event durations, the silence before the end, the longest silence of the whole request (the headroom against an idle timeout), received bytes, the event count, the preview event count, whether the plugin timeout ended the request, and whether the caller cancelled it. The request payload is never recorded: no prompt, no reference or response image data, no base64, no credentials. A failure record does carry the provider's own error text (credential- and base64-redacted), which a provider may derive from the prompt.
+`debug` defaults to `false` and, when enabled, appends one JSONL line of request metadata per generation to `<pi agent dir>/pi-image-gen-debug.jsonl` (`~/.pi/agent/pi-image-gen-debug.jsonl`). A record holds the transport, whether the request streamed, the endpoint, provider, why that provider was selected, the text and image model ids, action/size/quality, the number of partial previews requested, the reference image count, the result status and failure reason, the HTTP status, the total / response-header / first-event / last-event durations, the silence before the end, the longest silence of the whole request (the headroom against an idle timeout), received bytes, the event count, the preview event count, whether the plugin timeout ended the request, and whether the caller cancelled it. The request payload is never recorded: no prompt, no reference or response image data, no base64, no credentials. A failure record does carry the provider's own error text (credential- and base64-redacted), which a provider may derive from the prompt.
 
 The network-facing and diagnostic keys:
 
@@ -108,9 +115,7 @@ The network-facing and diagnostic keys:
 
 `userAgent` overrides the `User-Agent` header of image requests. It is never written into the provider's global model configuration. Header values containing CR/LF or forbidden hop-by-hop/auth keys are rejected. When the effective `User-Agent` announces a Codex client (for example `codex_cli_rs/0.153.4 ...`), the plugin derives the matching `originator` and `version` headers from it, because the ChatGPT backend rejects a request whose `originator` and user agent do not match. API keys are never stored by this plugin.
 
-For a host-independent configuration, omit `model`. PI-Desktop then injects the active provider/model binding and resolves its endpoint plus API key or OAuth headers through its model registry; native pi does the same with its own registry. The selected provider must expose either `/responses` with the `image_generation` tool or compatible `/images/generations` and `/images/edits` endpoints. Credentials are never copied into this shared file.
-
-Set `model` only when image requests must use a different configured provider binding from the active conversation. The configured `imageModel` (and `toolModel` on the Responses transport) remain the only image model identifiers sent in requests.
+For a host-independent configuration, leave `textModel` unset: PI-Desktop then injects the active provider/model binding and resolves its endpoint plus API key or OAuth headers through its model registry; native pi does the same with its own registry. Credentials are never copied into this shared file. Setting `textModel` to a model that only another configured provider offers is what moves image requests to that provider.
 
 The feature is disabled by default because a successful provider request may incur charges. Set `enabled` to `true` only after verifying the selected provider and image SKU.
 

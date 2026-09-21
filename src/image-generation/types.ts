@@ -33,16 +33,22 @@ export type ImageTransport = (typeof IMAGE_TRANSPORTS)[number];
 /** A transport that can actually be used for a request. */
 export type ActiveImageTransport = Exclude<ImageTransport, "auto">;
 
+/**
+ * Why a provider binding was selected for a request. Mirrors the three selection rules and is
+ * written to the debug log so an unexpected provider switch stays explainable.
+ */
+export type ImageBindingReason = "current-provider" | "matched-provider" | "session-fallback";
+
 export type ImageConfig = {
   enabled: boolean;
-  /** Optional provider/model binding used only to resolve an endpoint and credentials. */
-  model: string | undefined;
   /** Image model sent to the provider request payload. */
   imageModel: string | undefined;
-  /** Top-level Responses model that hosts the image_generation tool; defaults to the bound model. */
+  /**
+   * Top-level Responses model that hosts the image_generation tool. The provider binding that
+   * owns this model also serves the request, so it doubles as the provider selector.
+   * Defaults to the active session model id.
+   */
   textModel: string | undefined;
-  /** Model declared inside the image_generation tool; defaults to imageModel. */
-  toolModel: string | undefined;
   userAgent: string | undefined;
   /** Preferred transport; auto picks Responses for Responses-API providers. */
   transport: ImageTransport;
@@ -113,8 +119,8 @@ export type ImageGenerationRuntime = {
   transport: ActiveImageTransport;
   /** Top-level model for the Responses request. */
   textModel: string;
-  /** Image model declared inside the image_generation tool, when configured. */
-  toolModel?: string;
+  /** Why this provider binding was chosen; diagnostics only. */
+  bindingReason: ImageBindingReason;
   /** Partial previews requested from the Responses tool (0 disables them). */
   partialImages: number;
   /** Whether requests stream SSE responses or wait for one JSON response. */
@@ -187,7 +193,7 @@ export type ImageResponsesRequest = {
 /** Inputs for the Responses body; the caller decides which model plays which role. */
 export type ImageResponsesRequestOptions = {
   /** Image model declared by the image_generation tool (tools[0].model). */
-  toolModel: string;
+  imageModel: string;
   /** Top-level Responses model that hosts the tool. */
   textModel: string;
   params: NormalizedImageParams;

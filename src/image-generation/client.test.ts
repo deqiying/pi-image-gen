@@ -18,6 +18,7 @@ function makeRuntime(overrides: Partial<ImageGenerationRuntime> = {}): ImageGene
     responsesUrl: "https://gateway/v1/responses",
     transport: "responses",
     textModel: "chat",
+    bindingReason: "current-provider",
     partialImages: 1,
     stream: true,
     retryOnTransportFailure: false,
@@ -89,11 +90,11 @@ test("declares the image_generation tool on the Responses endpoint", async () =>
   assert.deepEqual(body.input, [{ type: "message", role: "user", content: [{ type: "input_text", text: "x" }] }]);
 });
 
-test("sends the configured text model and image tool model", async () => {
+test("sends the configured text model with the image model declared by the tool", async () => {
   _clientTest.resetResponsesFallbackState();
   let captured: RequestInit | undefined;
   const result = await requestGeneratedImage({
-    runtime: makeRuntime({ textModel: "gpt-5.4", toolModel: "gpt-image-1.5" }),
+    runtime: makeRuntime({ textModel: "gpt-5.4" }),
     imageModel: "gpt-image-2",
     params: generate,
     references: [],
@@ -103,7 +104,8 @@ test("sends the configured text model and image tool model", async () => {
   assert.equal(result.ok, true);
   const body = JSON.parse(String(captured?.body));
   assert.equal(body.model, "gpt-5.4");
-  assert.equal(body.tools[0].model, "gpt-image-1.5");
+  // The image_generation tool always declares the image model the request is sent with.
+  assert.equal(body.tools[0].model, "gpt-image-2");
   assert.deepEqual(body.tool_choice, { type: "image_generation" });
 });
 
@@ -310,39 +312,43 @@ test("falls back to multipart edits with intact reference bytes", async () => {
   assert.match(multipart?.toString("latin1") ?? "", /reference-bytes/);
   assert.equal(reference.every((byte) => byte === 0), true);
 });
-test("keeps the Images payload on the image model even when a tool model is configured", async () => {
+test("declares the image model on both the Responses tool and the Images fallback", async () => {
   _clientTest.resetResponsesFallbackState();
   const params = normalizeImageParams({ prompt: "edit", action: "edit", referenceImagePaths: ["input.png"] });
   const urls: string[] = [];
+  let responsesBody = "";
   let multipart = "";
   const result = await requestGeneratedImage({
-    runtime: makeRuntime({ toolModel: "gpt-image-1.5" }),
+    runtime: makeRuntime(),
     imageModel: "gpt-image-2",
     params,
     references: [{ path: "input.png", mimeType: "image/png", bytes: Buffer.from("reference-bytes") }],
     timeoutMs: 1_000,
     fetchFn: async (url, init) => {
       urls.push(String(url));
-      if (urls.length === 1) return new Response(JSON.stringify({ error: { message: "Unknown tool: image_generation" } }), { status: 400 });
+      if (urls.length === 1) {
+        responsesBody = String(init?.body);
+        return new Response(JSON.stringify({ error: { message: "Unknown tool: image_generation" } }), { status: 400 });
+      }
       multipart = Buffer.from(init?.body as Uint8Array).toString("latin1");
       return jsonImagesResponse();
     },
   });
   assert.equal(result.ok, true);
   assert.deepEqual(urls, ["https://gateway/v1/responses", "https://gateway/v1/images/edits"]);
-  // The Responses-only tool model must never leak into the Images request.
+  // One image model drives both transports; the fallback must not drift to another id.
+  assert.equal(JSON.parse(responsesBody).tools[0].model, "gpt-image-2");
   assert.match(multipart, /name="model"\r\n\r\ngpt-image-2/);
-  assert.doesNotMatch(multipart, /gpt-image-1\.5/);
 });
 
-test("uses the Responses path when only the tool model can host the tool", async () => {
+test("uses the Responses tool for a prefixed custom model that only looks like DALL-E", async () => {
   _clientTest.resetResponsesFallbackState();
   const urls: string[] = [];
   let captured: RequestInit | undefined;
   const result = await requestGeneratedImage({
-    runtime: makeRuntime({ toolModel: "gpt-image-1.5" }),
-    // DALL-E only exists on the Images API, so the tool model decides the transport.
-    imageModel: "dall-e-3",
+    runtime: makeRuntime(),
+    // Only exact `dall-e-2`/`dall-e-3` ids are guarded; this custom id still uses the tool.
+    imageModel: "dall-e-3-custom",
     params: generate,
     references: [],
     timeoutMs: 1_000,
@@ -351,25 +357,25 @@ test("uses the Responses path when only the tool model can host the tool", async
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.transport, "responses");
   assert.deepEqual(urls, ["https://gateway/v1/responses"]);
-  assert.equal(JSON.parse(String(captured?.body)).tools[0].model, "gpt-image-1.5");
+  assert.equal(JSON.parse(String(captured?.body)).tools[0].model, "dall-e-3-custom");
 });
 
-test("ignores a DALL-E tool model and keeps the Images request on the image model", async () => {
+test("keeps an exact DALL-E id off the Responses tool even for edits", async () => {
   _clientTest.resetResponsesFallbackState();
+  const params = normalizeImageParams({ prompt: "edit", action: "edit", referenceImagePaths: ["input.png"] });
   const urls: string[] = [];
-  const bodies: string[] = [];
   const result = await requestGeneratedImage({
-    runtime: makeRuntime({ toolModel: "dall-e-3" }),
-    imageModel: "gpt-image-2",
-    params: generate,
-    references: [],
+    runtime: makeRuntime(),
+    // DALL-E ids are never reachable through the Responses tool, edits included.
+    imageModel: "dall-e-2",
+    params,
+    references: [{ path: "input.png", mimeType: "image/png", bytes: Buffer.from(PNG, "base64") }],
     timeoutMs: 1_000,
-    fetchFn: async (url, init) => { urls.push(String(url)); bodies.push(String(init?.body)); return imagesCompleted(); },
+    fetchFn: async (url) => { urls.push(String(url)); return jsonImagesResponse(); },
   });
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.transport, "images");
-  assert.deepEqual(urls, ["https://gateway/v1/images/generations"]);
-  assert.equal(JSON.parse(bodies[0]!).model, "gpt-image-2");
+  assert.deepEqual(urls, ["https://gateway/v1/images/edits"]);
 });
 
 test("falls back on 501 but not for fulfilled or parameter-level failures", async () => {
@@ -762,13 +768,14 @@ test("emits one metadata-only debug record per request", async () => {
   _clientTest.resetResponsesFallbackState();
   const records: ImageDebugRecord[] = [];
   await requestGeneratedImage({
-    runtime: makeRuntime({ partialImages: 3 }),
+    runtime: makeRuntime({ partialImages: 3, bindingReason: "session-fallback" }),
     imageModel: "gpt-image-2",
     params: generate,
     references: [],
     timeoutMs: 1_000,
     onDebug: (record) => records.push(record),
-    fetchFn: async () => responsesDone(),
+    // A deliberate delay keeps the recorded timing measurable instead of a same-millisecond zero.
+    fetchFn: async () => { await new Promise((resolve) => setTimeout(resolve, 5)); return responsesDone(); },
   });
   assert.equal(records.length, 1);
   assert.equal(records[0]?.result.outcome, "ok");
@@ -776,6 +783,7 @@ test("emits one metadata-only debug record per request", async () => {
   assert.equal(records[0]?.transport, "responses");
   assert.equal(records[0]?.stream, true);
   assert.deepEqual(records[0]?.model, { text: "chat", image: "gpt-image-2" });
+  assert.equal(records[0]?.bindingReason, "session-fallback");
   assert.equal(records[0]!.timing.elapsedMs > 0, true);
   assert.equal(JSON.stringify(records[0]).includes("secret"), false);
 });

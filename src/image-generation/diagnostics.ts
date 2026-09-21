@@ -2,6 +2,7 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   sanitizeDiagnostic,
+  type ImageBindingReason,
   type ActiveImageTransport,
   type ImageAction,
   type ImageQuality,
@@ -55,11 +56,13 @@ export type ImageDebugRecord = {
   endpoint: string;
   provider: string;
   api: string;
+  /** Why this provider binding was selected instead of the session one. */
+  bindingReason: ImageBindingReason;
   transport: ActiveImageTransport;
   stream: boolean;
   /** Partial previews the request asked the Responses tool for. */
   partialImages: number;
-  model: { text: string; tool?: string; image: string };
+  model: { text: string; image: string };
   request: { action: ImageAction; size: ImageSize; quality: ImageQuality; referenceCount: number };
   result: { outcome: "ok" | "failure"; reason?: string; status?: number; truncated?: boolean; message?: string };
   timing: {
@@ -253,7 +256,7 @@ export function buildImageDebugRecord(input: {
   provider: string;
   api: string;
   textModel: string;
-  toolModel: string | undefined;
+  bindingReason: ImageBindingReason;
   imageModel: string;
   params: NormalizedImageParams;
   /** Partial previews the request asked the Responses tool for. */
@@ -268,12 +271,12 @@ export function buildImageDebugRecord(input: {
     endpoint: redactEndpoint(input.endpoint),
     provider: input.provider,
     api: input.api,
+    bindingReason: input.bindingReason,
     transport: trace.transport,
     stream: trace.stream,
     partialImages: input.partialImages,
     model: {
       text: input.textModel,
-      ...(input.toolModel ? { tool: input.toolModel } : {}),
       image: input.imageModel,
     },
     request: {

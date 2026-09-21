@@ -222,7 +222,7 @@ function clampPartialImages(value: number): number {
 /**
  * Builds the Responses API payload that declares the server-side image_generation
  * tool. This mirrors the official Codex client: the top-level `textModel` answers the
- * request while the built-in tool named by `tool_choice` runs on `toolModel`.
+ * request while the built-in tool named by `tool_choice` runs on the image model.
  *
  * `tool_choice` only selects the tool (`{ "type": "image_generation" }`); the API
  * defines no model field there, so the image model lives in `tools[0].model`.
@@ -236,8 +236,8 @@ function clampPartialImages(value: number): number {
  * capability fallback can still rebuild the same references as multipart data.
  */
 export function buildImageResponsesRequest(options: ImageResponsesRequestOptions): string {
-  const { toolModel, textModel, params, references } = options;
-  const model = requireImageModel(toolModel);
+  const { imageModel, textModel, params, references } = options;
+  const model = requireImageModel(imageModel);
   if (isDallEModel(model)) throw new ImageGenerationError("unsupported-model", "DALL-E models do not support the Responses image_generation tool.");
   validateImageRequest(model, params);
   const content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string; detail: "auto" }> = [{ type: "input_text", text: params.prompt }];

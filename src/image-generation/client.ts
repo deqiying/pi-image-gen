@@ -537,19 +537,11 @@ function clearReferences(references: readonly PreparedReferenceImage[]): void {
   for (const reference of references) reference.bytes.fill(0);
 }
 
-/**
- * Image model declared by the Responses image_generation tool. A configured toolModel
- * wins; otherwise the Images-API model is reused so both transports agree by default.
- */
-function responsesToolModel(args: ImageClientArgs): string {
-  return args.runtime.toolModel ?? args.imageModel;
-}
-
 function prepareResponsesRequest(args: ImageClientArgs, stream: boolean): PreparedRequest {
   return {
     url: args.runtime.responsesUrl,
     body: buildImageResponsesRequest({
-      toolModel: responsesToolModel(args),
+      imageModel: args.imageModel,
       textModel: args.runtime.textModel,
       params: args.params,
       references: args.references,
@@ -595,7 +587,7 @@ export async function requestGeneratedImage(args: ImageClientArgs): Promise<Imag
   const stream = args.runtime.stream;
   let final: RequestOutcome | undefined;
   try {
-    if (args.runtime.transport === "responses" && supportsResponsesTool(responsesToolModel(args)) && !isResponsesUnsupported(key)) {
+    if (args.runtime.transport === "responses" && supportsResponsesTool(args.imageModel) && !isResponsesUnsupported(key)) {
       const primary = await runPrepared(args, prepareResponsesRequest(args, stream), signal, timeout);
       if (primary.result.ok || !shouldFallbackToImages(primary.result)) {
         final = primary;
@@ -629,8 +621,8 @@ export async function requestGeneratedImage(args: ImageClientArgs): Promise<Imag
         provider: args.runtime.provider,
         api: args.runtime.api,
         textModel: args.runtime.textModel,
-        toolModel: args.runtime.toolModel,
         imageModel: args.imageModel,
+        bindingReason: args.runtime.bindingReason,
         params: args.params,
         referenceCount: args.references.length,
         partialImages: args.runtime.partialImages,

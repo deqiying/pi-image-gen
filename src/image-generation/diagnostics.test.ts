@@ -134,7 +134,7 @@ test("buildImageDebugRecord captures metadata only", () => {
     provider: "gateway",
     api: "openai-responses",
     textModel: "chat",
-    toolModel: "gpt-image-1.5",
+    bindingReason: "matched-provider",
     imageModel: "gpt-image-2",
     params,
     referenceCount: 0,
@@ -144,7 +144,8 @@ test("buildImageDebugRecord captures metadata only", () => {
   assert.equal(record.event, "image_request");
   assert.equal(record.endpoint, "https://gateway/v1/responses");
   assert.equal(record.partialImages, 2);
-  assert.deepEqual(record.model, { text: "chat", tool: "gpt-image-1.5", image: "gpt-image-2" });
+  assert.deepEqual(record.model, { text: "chat", image: "gpt-image-2" });
+  assert.equal(record.bindingReason, "matched-provider");
   assert.deepEqual(record.request, { action: "generate", size: "auto", quality: "auto", referenceCount: 0 });
   assert.equal(record.result.truncated, true);
   assert.equal(record.traffic.partials, 1);
@@ -162,7 +163,7 @@ test("appendImageDebugRecord appends one JSONL line per request", () => {
       provider: "gateway",
       api: "openai-responses",
       textModel: "chat",
-      toolModel: undefined,
+      bindingReason: "current-provider",
       imageModel: "gpt-image-2",
       params,
       referenceCount: 0,
@@ -189,7 +190,7 @@ test("appendImageDebugRecord reports a write failure instead of throwing", () =>
     provider: "gateway",
     api: "openai-responses",
     textModel: "chat",
-    toolModel: undefined,
+    bindingReason: "current-provider",
     imageModel: "gpt-image-2",
     params,
     referenceCount: 0,

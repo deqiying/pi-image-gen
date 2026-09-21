@@ -170,11 +170,11 @@ test("rejects URL-only and multi-image responses", () => {
   if (!multiple.ok) assert.equal(multiple.reason, "malformed-response");
 });
 
-test("builds the Responses image tool payload with independent text and tool models", () => {
+test("builds the Responses image tool payload with the image model declared by the tool", () => {
   const params = normalizeImageParams({ prompt: "a red square", action: "edit", referenceImagePaths: ["input.png"] });
   const reference = Buffer.from("reference-bytes");
   const body = JSON.parse(buildImageResponsesRequest({
-    toolModel: "gpt-image-2",
+    imageModel: "gpt-image-2",
     textModel: "chat-model",
     params,
     references: [{ path: "input.png", mimeType: "image/png", bytes: reference }],
@@ -200,7 +200,7 @@ test("builds the Responses image tool payload with independent text and tool mod
   assert.equal(supportsResponsesTool("dall-e-3"), false);
   // The top-level model is validated as a text model, so the failure names it.
   assert.throws(() => buildImageResponsesRequest({
-    toolModel: "gpt-image-2",
+    imageModel: "gpt-image-2",
     textModel: "  ",
     params: normalizeImageParams({ prompt: "x", action: "generate" }),
     references: [],
@@ -208,7 +208,7 @@ test("builds the Responses image tool payload with independent text and tool mod
     stream: true,
   }), /textModel/);
   assert.throws(() => buildImageResponsesRequest({
-    toolModel: "dall-e-3",
+    imageModel: "dall-e-3",
     textModel: "chat-model",
     params: normalizeImageParams({ prompt: "x", action: "generate" }),
     references: [],
@@ -255,7 +255,7 @@ test("parses non-streaming Responses payloads", () => {
 test("clamps partial previews and passes the stream flag through", () => {
   const params = normalizeImageParams({ prompt: "a red square", action: "generate" });
   const body = (partialImages: number, stream: boolean) =>
-    JSON.parse(buildImageResponsesRequest({ toolModel: "gpt-image-2", textModel: "chat-model", params, references: [], partialImages, stream })) as Record<string, any>;
+    JSON.parse(buildImageResponsesRequest({ imageModel: "gpt-image-2", textModel: "chat-model", params, references: [], partialImages, stream })) as Record<string, any>;
   // The Responses tool accepts 0-3 previews; out-of-range values are clamped into that band.
   assert.equal(body(7, true).tools[0].partial_images, 3);
   assert.equal(body(-2, true).tools[0].partial_images, 0);

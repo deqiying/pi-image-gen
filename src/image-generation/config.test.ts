@@ -6,13 +6,14 @@ import assert from "node:assert/strict";
 import { DEFAULT_CONFIG_PATH, LEGACY_CONFIG_PATH, loadImageConfig, _configTest } from "./config.js";
 import { DEFAULT_PARTIAL_IMAGES } from "./types.js";
 
-test("loads image config and preserves the provider binding/image model split", () => {
+test("loads image config and reports a removed routing key without invalidating", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-image-config-"));
   const file = join(dir, "config.json");
   writeFileSync(file, JSON.stringify({ enabled: true, model: "gateway/chat-model", imageModel: "image-2", userAgent: "test-client/1", defaultSize: "1024x1024" }));
   const loaded = loadImageConfig(file);
   assert.equal(loaded.valid, true);
-  assert.equal(loaded.config.model, "gateway/chat-model");
+  // The removed routing key is named, but it no longer fails the whole configuration.
+  assert.match(loaded.warnings.join(" "), /model routing key was removed/);
   assert.equal(loaded.config.imageModel, "image-2");
   assert.equal(loaded.config.defaultSize, "1024x1024");
   assert.equal(loaded.config.transport, "auto");
@@ -27,15 +28,15 @@ test("uses the shared config path and falls back to the legacy pi-agent path", (
   const primary = join(dir, "primary.json");
   const legacy = join(dir, "legacy.json");
   try {
-    writeFileSync(legacy, JSON.stringify({ enabled: true, model: "legacy/model" }));
+    writeFileSync(legacy, JSON.stringify({ enabled: true, imageModel: "legacy-image" }));
     const fallback = loadImageConfig(primary, legacy);
     assert.equal(fallback.source, legacy);
-    assert.equal(fallback.config.model, "legacy/model");
+    assert.equal(fallback.config.imageModel, "legacy-image");
 
-    writeFileSync(primary, JSON.stringify({ enabled: true, model: "primary/model" }));
+    writeFileSync(primary, JSON.stringify({ enabled: true, imageModel: "primary-image" }));
     const preferred = loadImageConfig(primary, legacy);
     assert.equal(preferred.source, primary);
-    assert.equal(preferred.config.model, "primary/model");
+    assert.equal(preferred.config.imageModel, "primary-image");
 
     writeFileSync(primary, "{");
     const invalidPrimary = loadImageConfig(primary, legacy);
@@ -60,8 +61,10 @@ test("uses disabled defaults when neither config path exists", () => {
 });
 
 test("invalid model and User-Agent values fail closed", () => {
-  assert.equal(_configTest.validModelSpec("gateway/model"), true);
-  assert.equal(_configTest.validModelSpec("not a model"), false);
+  assert.equal(_configTest.validBareModel("gpt-image-2"), true);
+  assert.equal(_configTest.validBareModel(""), false);
+  assert.equal(_configTest.validBareModel("   "), false);
+  assert.equal(_configTest.validBareModel("bad\nvalue"), false);
   assert.equal(_configTest.validUserAgent("client/1"), true);
   assert.equal(_configTest.validUserAgent("bad\nvalue"), false);
 });
@@ -85,34 +88,45 @@ test("parses the transport override and fails closed on unknown values", () => {
   }
 });
 
-test("parses the text and image tool model overrides and fails closed", () => {
+test("warns about the removed model keys without invalidating the config", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-image-models-"));
   const file = join(dir, "config.json");
   try {
-    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", textModel: "gpt-5.4", toolModel: "gpt-image-1.5" }));
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", textModel: "gpt-5.4", model: "gateway/chat-model", toolModel: "gpt-image-1.5" }));
     const loaded = loadImageConfig(file);
     assert.equal(loaded.valid, true);
     assert.equal(loaded.config.textModel, "gpt-5.4");
-    assert.equal(loaded.config.toolModel, "gpt-image-1.5");
+    // Each removed key gets its own targeted notice so the upgrade message names the right key.
+    assert.match(loaded.warnings.join(" "), /The model routing key was removed: textModel now selects the provider binding, so delete it\./);
+    assert.match(loaded.warnings.join(" "), /The toolModel key was removed: the image_generation tool always declares imageModel now, so move the value to imageModel\./);
+    // The remaining keys keep working.
+    assert.equal(loaded.config.imageModel, "gpt-image-2");
+    assert.equal(loaded.config.enabled, true);
 
     writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", textModel: "gpt-5.4", toolModel: null }));
     const cleared = loadImageConfig(file);
     assert.equal(cleared.valid, true);
     assert.equal(cleared.config.textModel, "gpt-5.4");
-    assert.equal(cleared.config.toolModel, undefined);
+    assert.match(cleared.warnings.join(" "), /toolModel key was removed/);
 
-    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", toolModel: "  " }));
-    const invalid = loadImageConfig(file);
-    assert.equal(invalid.valid, false);
-    assert.equal(invalid.config.enabled, false);
-    assert.match(invalid.warnings.join(" "), /toolModel/);
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", model: null }));
+    const nulled = loadImageConfig(file);
+    assert.equal(nulled.valid, true);
+    assert.equal(nulled.config.imageModel, "gpt-image-2");
+    assert.match(nulled.warnings.join(" "), /model routing key was removed/);
 
-    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", textModel: "", toolModel: 7 }));
-    const wrongTypes = loadImageConfig(file);
-    assert.equal(wrongTypes.valid, false);
-    assert.equal(wrongTypes.config.enabled, false);
-    assert.match(wrongTypes.warnings.join(" "), /textModel/);
-    assert.match(wrongTypes.warnings.join(" "), /toolModel/);
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", textModel: "" }));
+    const wrongType = loadImageConfig(file);
+    assert.equal(wrongType.valid, false);
+    assert.equal(wrongType.config.enabled, false);
+    assert.match(wrongType.warnings.join(" "), /textModel/);
+
+    // A field error must stay first: service.ts reports warnings[0] when the config is invalid.
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", model: "gateway/chat-model", transport: "carriage-pigeon" }));
+    const keyAndField = loadImageConfig(file);
+    assert.equal(keyAndField.valid, false);
+    assert.match(keyAndField.warnings[0] ?? "", /transport must be one of/);
+    assert.match(keyAndField.warnings.join(" "), /model routing key was removed/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
