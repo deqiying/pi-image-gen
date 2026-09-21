@@ -1,6 +1,7 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { executeImageGeneration } from "./image-generation/service.js";
+import { formatSeconds } from "./image-generation/diagnostics.js";
 import { renderImageGenerationResult } from "./image-generation/render.js";
 import { IMAGE_ACTIONS, IMAGE_QUALITIES, IMAGE_SIZES, IMAGE_TOOL_NAME, MAX_PATH_CHARS, MAX_PROMPT_CHARS, MAX_REFERENCE_COUNT, ImageGenerationError, sanitizeDiagnostic, type ImageToolParams } from "./image-generation/types.js";
 
@@ -40,9 +41,22 @@ export function registerImageGenerationExtension(pi: ExtensionAPI): void {
     ],
     parameters: ImageGenerationParameters,
     executionMode: "sequential",
-    async execute(toolCallId: string, params: ImageToolParams, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+    async execute(toolCallId: string, params: ImageToolParams, signal: AbortSignal | undefined, onUpdate: ((partial: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => void) | undefined, ctx: ExtensionContext) {
       try {
-        const result = await executeImageGeneration({ params, toolCallId, ...(signal ? { signal } : {}), ctx: ctx as never });
+        const result = await executeImageGeneration({
+          params,
+          toolCallId,
+          ...(signal ? { signal } : {}),
+          ...(onUpdate
+            ? {
+                onProgress: (event) => onUpdate({
+                  content: [{ type: "text", text: `Image generation in progress: ${event.partials} partial preview(s) received after ${formatSeconds(event.elapsedMs)}.` }],
+                  details: {},
+                }),
+              }
+            : {}),
+          ctx: ctx as never,
+        });
         return { content: [{ type: "text", text: result.text }], details: result.details };
       } catch (error) {
         if (error instanceof ImageGenerationError) throw new Error(error.message);
@@ -53,6 +67,9 @@ export function registerImageGenerationExtension(pi: ExtensionAPI): void {
   });
   pi.on("session_start", (_event, _ctx) => { syncActiveTool(pi); });
   pi.on("before_agent_start", (_event, _ctx) => { syncActiveTool(pi); });
+  // Switching models can hand the session a provider whose active-tool set drops
+  // image_gen; re-sync so the tool stays visible without disabling it per provider.
+  pi.on("model_select", (_event, _ctx) => { syncActiveTool(pi); });
 }
 
 export default function imageGenerationExtension(pi: ExtensionAPI): void {

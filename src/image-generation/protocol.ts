@@ -7,6 +7,7 @@ import {
   MAX_GENERATED_BYTES,
   MAX_IMAGE_DIMENSION,
   MAX_MODEL_CHARS,
+  MAX_PARTIAL_IMAGES,
   MAX_PATH_CHARS,
   MAX_PROMPT_CHARS,
   MAX_REFERENCE_COUNT,
@@ -95,13 +96,13 @@ export function validateImageRequest(imageModel: string, params: NormalizedImage
   }
 }
 
-export function buildImageGenerationRequest(imageModel: string, params: NormalizedImageParams): ImageCreateRequest {
+export function buildImageGenerationRequest(imageModel: string, params: NormalizedImageParams, partialImages = 0): ImageCreateRequest {
   const model = requireImageModel(imageModel);
   validateImageRequest(model, params);
   if (isDallEModel(model)) {
     return { model, prompt: params.prompt, n: 1, ...(params.size !== "auto" ? { size: params.size } : {}), response_format: "b64_json" };
   }
-  return { model, prompt: params.prompt, n: 1, size: params.size, quality: params.quality, output_format: "png" };
+  return { model, prompt: params.prompt, n: 1, size: params.size, quality: params.quality, output_format: "png", partial_images: clampPartialImages(partialImages) };
 }
 
 function safeMultipartFilename(path: string, index: number): string {
@@ -142,6 +143,8 @@ export function buildImageEditRequest(imageModel: string, params: NormalizedImag
     return { body, contentType: `multipart/form-data; boundary=${boundary}`, clear: () => body.fill(0) };
   } finally {
     for (const chunk of chunks) chunk.fill(0);
+    // The caller owns reference lifetime and clears them again in its own finally; clearing
+    // here too keeps this builder safe when it is used on its own, and it is idempotent.
     for (const reference of references) reference.bytes.fill(0);
   }
 }
@@ -210,6 +213,12 @@ function referenceDataUrl(reference: PreparedReferenceImage): string {
   return `data:${reference.mimeType};base64,${reference.bytes.toString("base64")}`;
 }
 
+/** The Responses tool accepts 0-3 partial previews; anything else is clamped. */
+function clampPartialImages(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(Math.max(Math.trunc(value), 0), MAX_PARTIAL_IMAGES);
+}
+
 /**
  * Builds the Responses API payload that declares the server-side image_generation
  * tool. This mirrors the official Codex client: the top-level `textModel` answers the
@@ -217,6 +226,11 @@ function referenceDataUrl(reference: PreparedReferenceImage): string {
  *
  * `tool_choice` only selects the tool (`{ "type": "image_generation" }`); the API
  * defines no model field there, so the image model lives in `tools[0].model`.
+ *
+ * `partial_images` makes the provider stream preview frames while a long generation
+ * stays otherwise silent, which is what keeps an idle intermediate proxy from closing
+ * the connection. Previews are progress only; the result still comes from the tool's
+ * completed `result` field.
  *
  * Reference bytes are read but not cleared here: the caller owns their lifetime so a
  * capability fallback can still rebuild the same references as multipart data.
@@ -226,14 +240,23 @@ export function buildImageResponsesRequest(options: ImageResponsesRequestOptions
   const model = requireImageModel(toolModel);
   if (isDallEModel(model)) throw new ImageGenerationError("unsupported-model", "DALL-E models do not support the Responses image_generation tool.");
   validateImageRequest(model, params);
-  const content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> = [{ type: "input_text", text: params.prompt }];
-  for (const reference of references) content.push({ type: "input_image", image_url: referenceDataUrl(reference) });
+  const content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string; detail: "auto" }> = [{ type: "input_text", text: params.prompt }];
+  for (const reference of references) content.push({ type: "input_image", image_url: referenceDataUrl(reference), detail: "auto" });
   const request: ImageResponsesRequest = {
     model: requireModel(textModel, "textModel"),
     store: false,
-    stream: true,
+    stream: options.stream,
+    parallel_tool_calls: false,
     input: [{ type: "message", role: "user", content }],
-    tools: [{ type: "image_generation", model, action: params.action, size: params.size, quality: params.quality, output_format: "png" }],
+    tools: [{
+      type: "image_generation",
+      model,
+      action: params.action,
+      size: params.size,
+      quality: params.quality,
+      output_format: "png",
+      partial_images: clampPartialImages(options.partialImages),
+    }],
     tool_choice: { type: "image_generation" },
   };
   return JSON.stringify(request);

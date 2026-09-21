@@ -22,7 +22,19 @@ test("builds a direct GPT Images API generation payload", () => {
     size: "auto",
     quality: "auto",
     output_format: "png",
+    partial_images: 0,
   });
+  // The streamed Images path carries its own keep-alive parameter.
+  assert.deepEqual(buildImageGenerationRequest("image-2", generate, 2), {
+    model: "image-2",
+    prompt: "a red square",
+    n: 1,
+    size: "auto",
+    quality: "auto",
+    output_format: "png",
+    partial_images: 2,
+  });
+  assert.equal(buildImageGenerationRequest("image-2", generate, 9).partial_images, 3);
 });
 
 test("does not apply DALL-E payload rules to prefixed custom models", () => {
@@ -34,6 +46,8 @@ test("does not apply DALL-E payload rules to prefixed custom models", () => {
     size: "auto",
     quality: "auto",
     output_format: "png",
+    // Only exact `dall-e-2`/`dall-e-3` ids take the DALL-E contract; this stays streamed.
+    partial_images: 0,
   });
 });
 
@@ -164,15 +178,21 @@ test("builds the Responses image tool payload with independent text and tool mod
     textModel: "chat-model",
     params,
     references: [{ path: "input.png", mimeType: "image/png", bytes: reference }],
+    partialImages: 0,
+    stream: true,
   })) as Record<string, any>;
   assert.equal(body.model, "chat-model");
   assert.equal(body.stream, true);
   assert.equal(body.store, false);
+  // One image tool call only: a preview must never race a parallel tool call.
+  assert.equal(body.parallel_tool_calls, false);
   // tool_choice only selects the built-in tool; the API defines no model field there.
   assert.deepEqual(body.tool_choice, { type: "image_generation" });
-  assert.deepEqual(body.tools, [{ type: "image_generation", model: "gpt-image-2", action: "edit", size: "auto", quality: "auto", output_format: "png" }]);
+  assert.deepEqual(body.tools, [{ type: "image_generation", model: "gpt-image-2", action: "edit", size: "auto", quality: "auto", output_format: "png", partial_images: 0 }]);
   assert.equal(body.input[0].content[1].type, "input_image");
   assert.match(body.input[0].content[1].image_url, /^data:image\/png;base64,/);
+  // References are sent at the provider's default detail level.
+  assert.equal(body.input[0].content[1].detail, "auto");
   // Caller owns the lifetime: the Images fallback rebuilds the same references.
   assert.equal(reference.toString("latin1"), "reference-bytes");
 
@@ -184,12 +204,16 @@ test("builds the Responses image tool payload with independent text and tool mod
     textModel: "  ",
     params: normalizeImageParams({ prompt: "x", action: "generate" }),
     references: [],
+    partialImages: 0,
+    stream: true,
   }), /textModel/);
   assert.throws(() => buildImageResponsesRequest({
     toolModel: "dall-e-3",
     textModel: "chat-model",
     params: normalizeImageParams({ prompt: "x", action: "generate" }),
     references: [],
+    partialImages: 0,
+    stream: true,
   }), /DALL-E/);
 });
 
@@ -226,4 +250,16 @@ test("parses non-streaming Responses payloads", () => {
     assert.equal(failed.reason, "request-rejected");
     assert.match(failed.errorMessage, /tool unsupported/);
   }
+});
+
+test("clamps partial previews and passes the stream flag through", () => {
+  const params = normalizeImageParams({ prompt: "a red square", action: "generate" });
+  const body = (partialImages: number, stream: boolean) =>
+    JSON.parse(buildImageResponsesRequest({ toolModel: "gpt-image-2", textModel: "chat-model", params, references: [], partialImages, stream })) as Record<string, any>;
+  // The Responses tool accepts 0-3 previews; out-of-range values are clamped into that band.
+  assert.equal(body(7, true).tools[0].partial_images, 3);
+  assert.equal(body(-2, true).tools[0].partial_images, 0);
+  assert.equal(body(2, true).tools[0].partial_images, 2);
+  // A host that does not stream asks for one JSON response instead of SSE frames.
+  assert.equal(body(0, false).stream, false);
 });

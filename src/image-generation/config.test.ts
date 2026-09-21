@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_CONFIG_PATH, LEGACY_CONFIG_PATH, loadImageConfig, _configTest } from "./config.js";
+import { DEFAULT_PARTIAL_IMAGES } from "./types.js";
 
 test("loads image config and preserves the provider binding/image model split", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-image-config-"));
@@ -112,6 +113,45 @@ test("parses the text and image tool model overrides and fails closed", () => {
     assert.equal(wrongTypes.config.enabled, false);
     assert.match(wrongTypes.warnings.join(" "), /textModel/);
     assert.match(wrongTypes.warnings.join(" "), /toolModel/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parses the long-generation options and fails closed on bad values", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-image-longrun-"));
+  const file = join(dir, "config.json");
+  try {
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", partialImages: 3, stream: false, retryOnTransportFailure: true, debug: true }));
+    const loaded = loadImageConfig(file);
+    assert.equal(loaded.valid, true);
+    assert.equal(loaded.config.partialImages, 3);
+    assert.equal(loaded.config.stream, false);
+    assert.equal(loaded.config.retryOnTransportFailure, true);
+    assert.equal(loaded.config.debug, true);
+    assert.deepEqual(loaded.warnings, []);
+
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", partialImages: null }));
+    const defaults = loadImageConfig(file);
+    assert.equal(defaults.valid, true);
+    assert.equal(defaults.config.partialImages, DEFAULT_PARTIAL_IMAGES);
+    assert.equal(defaults.config.stream, true);
+    assert.equal(defaults.config.retryOnTransportFailure, false);
+    assert.equal(defaults.config.debug, false);
+
+    for (const partialImages of [4, -1, 1.5, "1"]) {
+      writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", partialImages }));
+      const invalid = loadImageConfig(file);
+      assert.equal(invalid.valid, false, `partialImages ${JSON.stringify(partialImages)} must be rejected`);
+      assert.equal(invalid.config.enabled, false);
+      assert.match(invalid.warnings.join(" "), /partialImages/);
+    }
+
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", stream: "yes" }));
+    const wrongType = loadImageConfig(file);
+    assert.equal(wrongType.valid, false);
+    assert.equal(wrongType.config.enabled, false);
+    assert.match(wrongType.warnings.join(" "), /stream/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

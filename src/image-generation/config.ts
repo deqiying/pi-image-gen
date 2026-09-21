@@ -2,10 +2,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import {
+  DEFAULT_PARTIAL_IMAGES,
   IMAGE_QUALITIES,
   IMAGE_SIZES,
   IMAGE_TRANSPORTS,
   MAX_MODEL_CHARS,
+  MAX_PARTIAL_IMAGES,
   MAX_USER_AGENT_CHARS,
   type ImageConfig,
   type ImageQuality,
@@ -25,10 +27,15 @@ const DEFAULT_CONFIG: ImageConfig = {
   toolModel: undefined,
   userAgent: undefined,
   transport: "auto",
+  partialImages: DEFAULT_PARTIAL_IMAGES,
+  stream: true,
+  // A retry can duplicate a charge the gateway already booked, so it stays opt-in.
+  retryOnTransportFailure: false,
+  debug: false,
   defaultSize: "auto",
   defaultQuality: "auto",
 };
-const KNOWN_FIELDS = new Set(["enabled", "model", "imageModel", "textModel", "toolModel", "userAgent", "transport", "defaultSize", "defaultQuality"]);
+const KNOWN_FIELDS = new Set(["enabled", "model", "imageModel", "textModel", "toolModel", "userAgent", "transport", "partialImages", "stream", "retryOnTransportFailure", "debug", "defaultSize", "defaultQuality"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -116,6 +123,17 @@ export function loadImageConfig(
   if (raw.transport !== undefined) {
     if (typeof raw.transport === "string" && (IMAGE_TRANSPORTS as readonly string[]).includes(raw.transport)) config.transport = raw.transport as ImageTransport;
     else { warnings.push(`transport must be one of ${IMAGE_TRANSPORTS.join(", ")}.`); valid = false; }
+  }
+  if (raw.partialImages !== undefined) {
+    if (raw.partialImages === null) config.partialImages = DEFAULT_PARTIAL_IMAGES;
+    else if (typeof raw.partialImages === "number" && Number.isInteger(raw.partialImages) && raw.partialImages >= 0 && raw.partialImages <= MAX_PARTIAL_IMAGES) config.partialImages = raw.partialImages;
+    else { warnings.push(`partialImages must be an integer from 0 to ${MAX_PARTIAL_IMAGES}.`); valid = false; }
+  }
+  for (const key of ["stream", "retryOnTransportFailure", "debug"] as const) {
+    const value = raw[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === "boolean") config[key] = value;
+    else { warnings.push(`${key} must be a boolean.`); valid = false; }
   }
   if (raw.defaultSize !== undefined) {
     if (typeof raw.defaultSize === "string" && (IMAGE_SIZES as readonly string[]).includes(raw.defaultSize)) config.defaultSize = raw.defaultSize as ImageSize;

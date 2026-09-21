@@ -21,6 +21,11 @@ export const MAX_ERROR_BYTES = 64 * 1024;
 export const IMAGE_TIMEOUT_MS = 5 * 60 * 1000;
 export const MAX_IMAGE_DIMENSION = 100_000;
 
+/** The Responses image_generation tool accepts 0-3 partial previews. */
+export const MAX_PARTIAL_IMAGES = 3;
+/** Partial previews keep the stream alive while a long generation stays silent. */
+export const DEFAULT_PARTIAL_IMAGES = 1;
+
 export type ImageSize = (typeof IMAGE_SIZES)[number];
 export type ImageQuality = (typeof IMAGE_QUALITIES)[number];
 export type ImageAction = (typeof IMAGE_ACTIONS)[number];
@@ -41,6 +46,14 @@ export type ImageConfig = {
   userAgent: string | undefined;
   /** Preferred transport; auto picks Responses for Responses-API providers. */
   transport: ImageTransport;
+  /** Partial previews requested from the Responses tool (0 disables them). */
+  partialImages: number;
+  /** Use streamed SSE responses where the transport supports it. */
+  stream: boolean;
+  /** Opt-in retry of transport-level failures; a retry may duplicate charges. */
+  retryOnTransportFailure: boolean;
+  /** Append one metadata-only JSONL record per request to the agent debug log. */
+  debug: boolean;
   defaultSize: ImageSize;
   defaultQuality: ImageQuality;
 };
@@ -102,6 +115,14 @@ export type ImageGenerationRuntime = {
   textModel: string;
   /** Image model declared inside the image_generation tool, when configured. */
   toolModel?: string;
+  /** Partial previews requested from the Responses tool (0 disables them). */
+  partialImages: number;
+  /** Whether requests stream SSE responses or wait for one JSON response. */
+  stream: boolean;
+  /** Whether a transport-level failure may be retried once (may re-bill). */
+  retryOnTransportFailure: boolean;
+  /** Whether the caller wants a metadata-only debug record per request. */
+  debug: boolean;
   apiKey?: string;
   headers?: Record<string, string | null>;
   sessionId?: string;
@@ -126,6 +147,8 @@ export type ImageCreateRequest = {
   quality?: ImageQuality;
   output_format?: "png";
   response_format?: "b64_json";
+  /** Images API keep-alive for streamed generations (0-3); DALL-E requests omit it. */
+  partial_images?: number;
 };
 
 export type ImageEditRequest = {
@@ -138,11 +161,15 @@ export type ImageEditRequest = {
 export type ImageResponsesRequest = {
   model: string;
   store: false;
-  stream: true;
+  stream: boolean;
+  parallel_tool_calls: false;
   input: Array<{
     type: "message";
     role: "user";
-    content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }>;
+    content: Array<
+      | { type: "input_text"; text: string }
+      | { type: "input_image"; image_url: string; detail?: "auto" }
+    >;
   }>;
   tools: Array<{
     type: "image_generation";
@@ -151,6 +178,8 @@ export type ImageResponsesRequest = {
     size: ImageSize;
     quality: ImageQuality;
     output_format: "png";
+    /** 0 disables previews; 1-3 make the provider stream partial images. */
+    partial_images: number;
   }>;
   tool_choice: { type: "image_generation" };
 };
@@ -163,6 +192,10 @@ export type ImageResponsesRequestOptions = {
   textModel: string;
   params: NormalizedImageParams;
   references: readonly PreparedReferenceImage[];
+  /** Partial previews requested from the tool; the builder clamps it to 0-3. */
+  partialImages: number;
+  /** Stream the Responses body instead of waiting for one JSON response. */
+  stream: boolean;
 };
 
 export type ParsedGeneratedImage = {
@@ -227,9 +260,13 @@ export class ImageGenerationError extends Error {
   }
 }
 
+/**
+ * Renders a human-readable diagnostic from an arbitrary failure value. Values that
+ * carry no usable message (undefined, null, empty strings, opaque objects) fall back
+ * to the supplied description instead of leaking a literal "undefined".
+ */
 export function sanitizeDiagnostic(value: unknown, fallback: string): string {
-  const raw = value instanceof Error ? value.message : typeof value === "string" ? value : String(value);
-  const normalized = raw
+  const normalized = (describeDiagnosticValue(value) ?? "")
     .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, "[REDACTED_IMAGE_DATA]")
     .replace(/[A-Za-z0-9+/]{128,}={0,2}/g, "[REDACTED_BASE64]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
@@ -239,6 +276,32 @@ export function sanitizeDiagnostic(value: unknown, fallback: string): string {
     .replace(/\s+/g, " ")
     .trim();
   return (normalized || fallback).slice(0, 4_096);
+}
+
+/** Extracts a descriptive string from a thrown value, or undefined when it has none. */
+function describeDiagnosticValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return value.trim() || undefined;
+  if (value instanceof Error) {
+    const parts: string[] = [];
+    const detail = value.name && value.name !== "Error" ? `${value.name}: ${value.message}` : value.message;
+    if (detail.trim()) parts.push(detail.trim());
+    const code = (value as { code?: unknown }).code;
+    if (typeof code === "string" || typeof code === "number") parts.push(`code=${code}`);
+    const cause = (value as { cause?: unknown }).cause;
+    if (cause !== undefined && cause !== value) parts.push(`cause=${describeDiagnosticValue(cause) ?? typeof cause}`);
+    return parts.join(" ") || undefined;
+  }
+  if (typeof value === "object") {
+    try {
+      const json = JSON.stringify(value);
+      return json && json !== "{}" ? json : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  const primitive = String(value).trim();
+  return primitive || undefined;
 }
 
 function record(value: unknown): value is Record<string, unknown> {

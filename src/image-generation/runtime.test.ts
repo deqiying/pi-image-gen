@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildImageRequestHeaders, codexIdentity } from "./codex-headers.js";
 import { buildImagesUrl, buildResponsesUrl, parseModelSpec, resolveImageRuntime, resolveImageTransport } from "./runtime.js";
-import type { ImageConfig, ImageGenerationRuntime } from "./types.js";
+import { DEFAULT_PARTIAL_IMAGES, type ImageConfig, type ImageGenerationRuntime } from "./types.js";
 
-const baseConfig: ImageConfig = { enabled: true, model: undefined, imageModel: "image-2", textModel: undefined, toolModel: undefined, userAgent: undefined, transport: "auto", defaultSize: "auto", defaultQuality: "auto" };
+// loadImageConfig supplies these values when the config file omits them.
+const baseConfig: ImageConfig = { enabled: true, model: undefined, imageModel: "image-2", textModel: undefined, toolModel: undefined, userAgent: undefined, transport: "auto", partialImages: DEFAULT_PARTIAL_IMAGES, stream: true, retryOnTransportFailure: false, debug: false, defaultSize: "auto", defaultQuality: "auto" };
 
 const runtime: ImageGenerationRuntime = {
   provider: "image",
@@ -20,6 +21,10 @@ const runtime: ImageGenerationRuntime = {
   headers: { "User-Agent": "provider", Cookie: "private", "Content-Type": "invalid", "x-api-key": "gateway-key", "x-extra": "yes" },
   sessionId: "s",
   currentModel: { provider: "image", id: "credential-model", api: "openai-codex-responses" },
+  partialImages: 1,
+  stream: true,
+  retryOnTransportFailure: false,
+  debug: false,
 };
 
 test("builds direct Images API endpoints", () => {
@@ -35,6 +40,10 @@ test("builds the Responses endpoint for gateways and codex backends", () => {
   assert.equal(buildResponsesUrl("https://chatgpt.com/backend-api", "openai-codex-responses"), "https://chatgpt.com/backend-api/codex/responses");
   assert.equal(buildResponsesUrl("https://chatgpt.com/backend-api/codex", "openai-codex-responses"), "https://chatgpt.com/backend-api/codex/responses");
   assert.equal(buildResponsesUrl("https://chatgpt.com/backend-api/codex/responses", "openai-codex-responses"), "https://chatgpt.com/backend-api/codex/responses");
+  // A gateway that advertises a versioned base URL serves the plain `/responses` route: its
+  // `/v1/codex/responses` sibling does not exist, so the version suffix wins over the API id.
+  assert.equal(buildResponsesUrl("https://gateway.example/v1", "openai-codex-responses"), "https://gateway.example/v1/responses");
+  assert.equal(buildResponsesUrl("https://gateway.example/v1/", "openai-codex-responses"), "https://gateway.example/v1/responses");
 });
 
 test("selects the Responses transport only for Responses APIs unless configured", () => {
@@ -173,4 +182,28 @@ test("allows a host-resolved provider that requires no credential", async () => 
   assert.equal(resolved.responsesUrl, "http://127.0.0.1:8080/v1/responses");
   assert.equal(resolved.transport, "images");
   assert.equal(resolved.apiKey, undefined);
+});
+
+test("passes the streaming, retry, and debug switches into the runtime", async () => {
+  const ctx = {
+    model: { provider: "image", id: "credential-model", api: "openai-codex-responses", baseUrl: "https://image/v1" },
+    modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "secret" }) },
+    sessionManager: { getSessionId: () => "session-1" },
+    cwd: ".",
+    hasUI: false,
+    ui: {},
+  } as never;
+  const configured = await resolveImageRuntime(ctx, { ...baseConfig, partialImages: 2, stream: false, retryOnTransportFailure: true, debug: true });
+  assert.equal(configured.partialImages, 2);
+  assert.equal(configured.stream, false);
+  assert.equal(configured.retryOnTransportFailure, true);
+  assert.equal(configured.debug, true);
+
+  // baseConfig carries the values loadImageConfig applies when the config file omits them,
+  // so an unconfigured host must resolve to the documented defaults.
+  const defaults = await resolveImageRuntime(ctx, baseConfig);
+  assert.equal(defaults.partialImages, 1);
+  assert.equal(defaults.stream, true);
+  assert.equal(defaults.retryOnTransportFailure, false);
+  assert.equal(defaults.debug, false);
 });

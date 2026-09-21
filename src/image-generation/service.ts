@@ -1,6 +1,7 @@
 import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadImageConfig } from "./config.js";
 import { requestGeneratedImage } from "./client.js";
+import { appendImageDebugRecord, type ImageDebugRecord, type ImageProgressEvent } from "./diagnostics.js";
 import { prepareExplicitOutputPath, saveCanonicalImage, copyImageToExplicitPath } from "./artifacts.js";
 import { clearPreparedReferences, prepareReferenceImages } from "./references.js";
 import { normalizeImageParams, validateImageRequest } from "./protocol.js";
@@ -35,6 +36,8 @@ export async function executeImageGeneration(args: {
   toolCallId: string;
   signal?: AbortSignal;
   ctx: ImageGenerationContext;
+  /** Reports partial previews so the caller can stream progress to the user. */
+  onProgress?: (event: ImageProgressEvent) => void;
   deps?: Partial<ImageExecutionDependencies>;
 }): Promise<ImageGenerationResult> {
   const deps = { ...DEFAULT_DEPS, ...(args.deps ?? {}) };
@@ -48,6 +51,11 @@ export async function executeImageGeneration(args: {
   // Validate the model the primary transport actually sends: the Responses path runs on
   // toolModel and would otherwise inherit DALL-E-only restrictions from imageModel.
   validateImageRequest(effectiveImageModel(runtime, imageModel, runtime.transport), params);
+  // The debug log is best effort: a write failure must never lose an already paid result.
+  let debugWarning: string | undefined;
+  const onDebug = loaded.config.debug
+    ? (record: ImageDebugRecord) => { debugWarning = appendImageDebugRecord(deps.agentDir(), record); }
+    : undefined;
   const confirm = args.ctx.hasUI ? async (title: string, message: string, options?: { signal?: AbortSignal }) => args.ctx.ui.confirm(title, message, options) : undefined;
   const outputPlan = await prepareExplicitOutputPath({ cwd: args.ctx.cwd, agentDir: deps.agentDir(), hasUI: args.ctx.hasUI, ...(params.outputPath ? { rawPath: params.outputPath } : {}), ...(confirm ? { confirm } : {}), ...(args.signal ? { signal: args.signal } : {}) });
   const references = params.action === "edit"
@@ -56,8 +64,20 @@ export async function executeImageGeneration(args: {
   let generated: Buffer | undefined;
   try {
     if (args.signal?.aborted) throw new ImageGenerationError("aborted", "Image generation was cancelled.");
-    const response = await deps.requestImage({ runtime, imageModel, params, references, ...(loaded.config.userAgent ? { userAgent: loaded.config.userAgent } : {}), ...(args.signal ? { signal: args.signal } : {}) });
-    if (!response.ok) throw new ImageGenerationError(response.reason === "no-image" ? "no-image" : response.reason, response.errorMessage);
+    const response = await deps.requestImage({
+      runtime,
+      imageModel,
+      params,
+      references,
+      ...(loaded.config.userAgent ? { userAgent: loaded.config.userAgent } : {}),
+      ...(args.signal ? { signal: args.signal } : {}),
+      ...(args.onProgress ? { onProgress: args.onProgress } : {}),
+      ...(onDebug ? { onDebug } : {}),
+    });
+    if (!response.ok) {
+      const failureMessage = debugWarning ? `${response.errorMessage} Debug log unavailable: ${debugWarning}` : response.errorMessage;
+      throw new ImageGenerationError(response.reason === "no-image" ? "no-image" : response.reason, failureMessage);
+    }
     // Report the model that actually produced the image, not the Images-API default.
     const usedImageModel = effectiveImageModel(runtime, imageModel, response.transport);
     generated = response.image.bytes;
@@ -86,6 +106,7 @@ export async function executeImageGeneration(args: {
       `${params.action === "edit" ? "Edited" : "Generated"} PNG image (${details.width}x${details.height}).`,
       `Artifact: ${details.artifactPath}`,
       ...(details.outputPath ? [`Copied to: ${details.outputPath}`] : []),
+      ...(debugWarning ? [`Debug log unavailable: ${debugWarning}`] : []),
     ];
     return { details, text: lines.join("\n") };
   } finally {

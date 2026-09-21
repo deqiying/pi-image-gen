@@ -43,14 +43,18 @@ export function buildImagesUrl(baseUrl: string, action: "generate" | "edit"): st
 }
 
 /**
- * Responses endpoint for the tools[] + image_generation transport. Codex-style
- * providers expose the ChatGPT backend under `/backend-api/codex/responses`, so a
- * base URL that is not already codex-scoped gets that suffix (mirrors the host's
- * own codex client, which appends `/codex/responses`).
+ * Responses endpoint for the tools[] + image_generation transport. A ChatGPT/Codex
+ * backend is backend-scoped (`.../backend-api[/codex]`) and serves
+ * `/backend-api/codex/responses`, so those base URLs get the codex suffix (mirroring the
+ * host's own codex client). An OpenAI-compatible gateway that advertises a versioned base
+ * URL (`.../v1`) is not that backend: it serves the plain `/responses` route and has no
+ * `/codex/responses` sibling, so it is used directly instead of being probed.
  */
 export function buildResponsesUrl(baseUrl: string, api: string): string {
   const root = imageRequestRoot(baseUrl);
-  if (api === "openai-codex-responses" || /\/backend-api(?:\/|$)/i.test(root)) {
+  const versioned = /\/v\d+(?:\.\d+)*$/i.test(root);
+  const codexBackend = api === "openai-codex-responses" || /\/backend-api(?:\/|$)/i.test(root);
+  if (codexBackend && !versioned) {
     return root.endsWith("/codex") ? `${root}/responses` : `${root}/codex/responses`;
   }
   return `${root}/responses`;
@@ -106,6 +110,10 @@ export async function resolveImageRuntime(ctx: ImageGenerationContext, config: I
     // stays unset unless configured, so the client can fall back to imageModel.
     textModel: config.textModel ?? selected.id,
     ...(config.toolModel ? { toolModel: config.toolModel } : {}),
+    partialImages: config.partialImages,
+    stream: config.stream,
+    retryOnTransportFailure: config.retryOnTransportFailure,
+    debug: config.debug,
     ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
     headers: { ...(selected.headers ?? {}), ...(auth.headers ?? {}) },
     ...(sessionId ? { sessionId } : {}),

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { _clientTest, requestGeneratedImage } from "./client.js";
 import { normalizeImageParams } from "./protocol.js";
 import type { ImageGenerationRuntime } from "./types.js";
+import type { ImageDebugRecord } from "./diagnostics.js";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
@@ -17,6 +18,10 @@ function makeRuntime(overrides: Partial<ImageGenerationRuntime> = {}): ImageGene
     responsesUrl: "https://gateway/v1/responses",
     transport: "responses",
     textModel: "chat",
+    partialImages: 1,
+    stream: true,
+    retryOnTransportFailure: false,
+    debug: false,
     apiKey: "secret",
     headers: { "User-Agent": "provider" },
     currentModel: { provider: "gateway", id: "chat", api: "openai-responses" },
@@ -79,7 +84,8 @@ test("declares the image_generation tool on the Responses endpoint", async () =>
   assert.equal(body.stream, true);
   assert.equal(body.store, false);
   assert.deepEqual(body.tool_choice, { type: "image_generation" });
-  assert.deepEqual(body.tools, [{ type: "image_generation", model: "gpt-image-2", action: "generate", size: "auto", quality: "auto", output_format: "png" }]);
+  assert.deepEqual(body.tools, [{ type: "image_generation", model: "gpt-image-2", action: "generate", size: "auto", quality: "auto", output_format: "png", partial_images: 1 }]);
+  assert.equal(body.parallel_tool_calls, false);
   assert.deepEqual(body.input, [{ type: "message", role: "user", content: [{ type: "input_text", text: "x" }] }]);
 });
 
@@ -274,6 +280,7 @@ test("uploads references as input images on the Responses transport", async () =
   const body = JSON.parse(String(captured?.body));
   assert.equal(body.tools[0].action, "edit");
   assert.equal(body.input[0].content[1].type, "input_image");
+  assert.equal(body.input[0].content[1].detail, "auto");
   assert.match(body.input[0].content[1].image_url, /^data:image\/png;base64,/);
 });
 
@@ -576,18 +583,30 @@ test("maps provider errors without exposing bearer values", async () => {
   }
 });
 
-test("classifies a response stream read failure as a network error", async () => {
+test("reports a mid-stream read failure as a truncated stream, not as a retryable endpoint failure", async () => {
   _clientTest.resetResponsesFallbackState();
+  const urls: string[] = [];
   const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error("stream failed")); } });
   const result = await requestGeneratedImage({
     runtime: makeRuntime({ transport: "images" }),
     imageModel: "gpt-image-2",
     params: generate,
     references: [],
-    fetchFn: async () => new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    timeoutMs: 2_000,
+    fetchFn: async (url) => {
+      urls.push(String(url));
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    },
   });
   assert.equal(result.ok, false);
-  if (!result.ok) assert.equal(result.reason, "network");
+  if (!result.ok) {
+    assert.equal(result.reason, "no-image");
+    assert.equal(result.truncated, true);
+    // The provider accepted the request, so no second endpoint may be billed for it.
+    assert.match(result.errorMessage, /ended before a complete image result/);
+    assert.match(result.errorMessage, /stream failed/);
+  }
+  assert.deepEqual(urls, ["https://gateway/v1/images/generations"]);
 });
 
 test("clears bounded response chunks on success, overflow, and read failure", async () => {
@@ -627,4 +646,279 @@ test("clears bounded response chunks on success, overflow, and read failure", as
     releaseLock: () => undefined,
   }), 4), /stream failed/);
   assert.equal(failedChunk.every((byte) => byte === 0), true);
+});
+
+test("streams partial preview frames as progress without ending the read", async () => {
+  _clientTest.resetResponsesFallbackState();
+  const progress: Array<{ partials: number; elapsedMs: number }> = [];
+  let captured: RequestInit | undefined;
+  const body = [
+    sseEvent("response.image_generation_call.partial_image", { type: "response.image_generation_call.partial_image", partial_image_index: 0, partial_image_b64: "aGk=" }),
+    sseEvent("response.image_generation_call.partial_image", { type: "response.image_generation_call.partial_image", partial_image_index: 1, partial_image_b64: "aGk=" }),
+    sseEvent("response.output_item.done", { type: "response.output_item.done", item: { type: "image_generation_call", id: "ig_1", status: "completed", result: PNG } }),
+  ].join("");
+  const result = await requestGeneratedImage({
+    runtime: makeRuntime({ partialImages: 2 }),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    onProgress: (event) => progress.push(event),
+    fetchFn: async (_url, init) => { captured = init; return sseResponse(body); },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(JSON.parse(String(captured?.body)).tools[0].partial_images, 2);
+  assert.deepEqual(progress.map((event) => event.partials), [1, 2]);
+});
+
+test("treats a stream that ends without a terminal event as truncated and never falls back", async () => {
+  _clientTest.resetResponsesFallbackState();
+  const urls: string[] = [];
+  const result = await requestGeneratedImage({
+    runtime: makeRuntime(),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    fetchFn: async (url) => {
+      urls.push(String(url));
+      // A proxy closed the connection after one preview frame, long before the image.
+      return sseResponse(sseEvent("response.image_generation_call.partial_image", { type: "response.image_generation_call.partial_image", partial_image_index: 0 }));
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "no-image");
+    assert.equal(result.truncated, true);
+  }
+  assert.deepEqual(urls, ["https://gateway/v1/responses"]);
+});
+
+test("keeps the requests non-streaming when stream is disabled", async () => {
+  _clientTest.resetResponsesFallbackState();
+  let captured: RequestInit | undefined;
+  const responses = await requestGeneratedImage({
+    runtime: makeRuntime({ stream: false }),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    fetchFn: async (_url, init) => { captured = init; return jsonResponsesResponse(); },
+  });
+  assert.equal(responses.ok, true);
+  assert.equal(new Headers(captured?.headers).get("accept"), "application/json");
+  assert.equal(JSON.parse(String(captured?.body)).stream, false);
+
+  _clientTest.resetResponsesFallbackState();
+  const images = await requestGeneratedImage({
+    runtime: makeRuntime({ transport: "images", stream: false }),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    fetchFn: async (_url, init) => { captured = init; return jsonImagesResponse(); },
+  });
+  assert.equal(images.ok, true);
+  assert.equal(new Headers(captured?.headers).get("accept"), "application/json");
+  assert.equal(JSON.parse(String(captured?.body)).stream, undefined);
+});
+
+test("retries a transport failure only when the caller opted in", async () => {
+  const truncated = () => new Response(sseEvent("image_generation.partial_image", { type: "image_generation.partial_image", b64_json: "aGk=" }), { status: 200, headers: { "content-type": "text/event-stream" } });
+
+  _clientTest.resetResponsesFallbackState();
+  let calls = 0;
+  const defaultRun = await requestGeneratedImage({
+    runtime: makeRuntime({ transport: "images" }),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    fetchFn: async () => { calls++; return truncated(); },
+  });
+  assert.equal(defaultRun.ok, false);
+  assert.equal(calls, 1);
+
+  _clientTest.resetResponsesFallbackState();
+  calls = 0;
+  const retried = await requestGeneratedImage({
+    runtime: makeRuntime({ transport: "images", retryOnTransportFailure: true }),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    fetchFn: async () => { calls++; return calls === 1 ? truncated() : imagesCompleted(); },
+  });
+  assert.equal(retried.ok, true);
+  assert.equal(calls, 2);
+
+  assert.equal(_clientTest.isRetryableTransportFailure({ ok: false, reason: "network", errorMessage: "n", transport: "responses" }), true);
+  assert.equal(_clientTest.isRetryableTransportFailure({ ok: false, reason: "no-image", truncated: true, errorMessage: "n", transport: "responses" }), true);
+  assert.equal(_clientTest.isRetryableTransportFailure({ ok: false, reason: "no-image", errorMessage: "n", transport: "responses" }), false);
+  assert.equal(_clientTest.isRetryableTransportFailure({ ok: false, reason: "authentication", errorMessage: "n", transport: "responses" }), false);
+});
+
+test("emits one metadata-only debug record per request", async () => {
+  _clientTest.resetResponsesFallbackState();
+  const records: ImageDebugRecord[] = [];
+  await requestGeneratedImage({
+    runtime: makeRuntime({ partialImages: 3 }),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    onDebug: (record) => records.push(record),
+    fetchFn: async () => responsesDone(),
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.result.outcome, "ok");
+  assert.equal(records[0]?.partialImages, 3);
+  assert.equal(records[0]?.transport, "responses");
+  assert.equal(records[0]?.stream, true);
+  assert.deepEqual(records[0]?.model, { text: "chat", image: "gpt-image-2" });
+  assert.equal(records[0]!.timing.elapsedMs > 0, true);
+  assert.equal(JSON.stringify(records[0]).includes("secret"), false);
+});
+
+test("keeps a provider verdict from an interrupted stream out of the Images fallback", async () => {
+  _clientTest.resetResponsesFallbackState();
+  const urls: string[] = [];
+  const result = await requestGeneratedImage({
+    runtime: makeRuntime(),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    fetchFn: async (url) => {
+      urls.push(String(url));
+      // The provider announced the image call, then the connection ended before a result.
+      return sseResponse(sseEvent("response.output_item.done", { type: "response.output_item.done", item: { type: "image_generation_call", id: "ig_1", status: "in_progress" } }));
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "no-image");
+    assert.equal(result.truncated, true);
+  }
+  assert.deepEqual(urls, ["https://gateway/v1/responses"]);
+  assert.equal(_clientTest.shouldFallbackToImages({ ok: false, reason: "no-image", truncated: true, errorMessage: "n", transport: "responses" }), false);
+});
+
+test("treats an incomplete response as a provider verdict, not a cut connection", async () => {
+  _clientTest.resetResponsesFallbackState();
+  const urls: string[] = [];
+  const result = await requestGeneratedImage({
+    runtime: makeRuntime({ retryOnTransportFailure: true }),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    fetchFn: async (url) => {
+      urls.push(String(url));
+      return sseResponse(sseEvent("response.incomplete", {
+        type: "response.incomplete",
+        response: { id: "resp_1", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [] },
+      }));
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "request-rejected");
+    assert.equal(result.truncated, undefined);
+    assert.match(result.errorMessage, /max_output_tokens/);
+  }
+  // A turn the provider ended on purpose is neither retried nor billed on another endpoint.
+  assert.deepEqual(urls, ["https://gateway/v1/responses"]);
+});
+
+test("reads a JSON error body even when the gateway labels it as a stream", async () => {
+  _clientTest.resetResponsesFallbackState();
+  const result = await requestGeneratedImage({
+    runtime: makeRuntime(),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    fetchFn: async () => new Response(JSON.stringify({ error: { message: "insufficient quota" } }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "request-rejected");
+    assert.equal(result.truncated, undefined);
+    assert.match(result.errorMessage, /insufficient quota/);
+  }
+});
+
+test("counts keep-alive frames as activity but never as preview images", async () => {
+  _clientTest.resetResponsesFallbackState();
+  const progress: number[] = [];
+  const body = [
+    sseEvent("response.in_progress", { type: "response.in_progress" }),
+    sseEvent("response.output_item.done", { type: "response.output_item.done", item: { type: "image_generation_call", id: "ig_1", status: "completed", result: PNG } }),
+  ].join("");
+  const result = await requestGeneratedImage({
+    runtime: makeRuntime(),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    onProgress: (event) => progress.push(event.partials),
+    fetchFn: async () => sseResponse(body),
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(progress, []);
+});
+
+test("does not mistake a throwing progress callback for a broken connection", async () => {
+  _clientTest.resetResponsesFallbackState();
+  const body = [
+    sseEvent("response.image_generation_call.partial_image", { type: "response.image_generation_call.partial_image", partial_image_index: 0 }),
+    sseEvent("response.output_item.done", { type: "response.output_item.done", item: { type: "image_generation_call", id: "ig_1", status: "completed", result: PNG } }),
+  ].join("");
+  const result = await requestGeneratedImage({
+    runtime: makeRuntime({ retryOnTransportFailure: true }),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    onProgress: () => { throw new Error("ui exploded"); },
+    fetchFn: async () => sseResponse(body),
+  });
+  assert.equal(result.ok, true);
+});
+
+test("never retries after a cancellation even when retries are enabled", async () => {
+  _clientTest.resetResponsesFallbackState();
+  const controller = new AbortController();
+  const truncated = () => new Response(sseEvent("image_generation.partial_image", { type: "image_generation.partial_image", b64_json: "aGk=" }), { status: 200, headers: { "content-type": "text/event-stream" } });
+  let calls = 0;
+  const result = await requestGeneratedImage({
+    runtime: makeRuntime({ transport: "images", retryOnTransportFailure: true }),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    signal: controller.signal,
+    timeoutMs: 2_000,
+    fetchFn: async () => { calls++; controller.abort(); return truncated(); },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "aborted");
+  assert.equal(calls, 1);
+});
+
+test("requests partial previews on the Images API stream too", async () => {
+  _clientTest.resetResponsesFallbackState();
+  let captured: RequestInit | undefined;
+  const result = await requestGeneratedImage({
+    runtime: makeRuntime({ transport: "images", partialImages: 2 }),
+    imageModel: "gpt-image-2",
+    params: generate,
+    references: [],
+    timeoutMs: 1_000,
+    fetchFn: async (_url, init) => { captured = init; return imagesCompleted(); },
+  });
+  assert.equal(result.ok, true);
+  const body = JSON.parse(String(captured?.body));
+  assert.equal(body.stream, true);
+  assert.equal(body.partial_images, 2);
 });
