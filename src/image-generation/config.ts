@@ -4,11 +4,13 @@ import { readFileSync, statSync } from "node:fs";
 import {
   IMAGE_QUALITIES,
   IMAGE_SIZES,
+  IMAGE_TRANSPORTS,
   MAX_MODEL_CHARS,
   MAX_USER_AGENT_CHARS,
   type ImageConfig,
   type ImageQuality,
   type ImageSize,
+  type ImageTransport,
   type LoadedImageConfig,
 } from "./types.js";
 
@@ -19,11 +21,14 @@ const DEFAULT_CONFIG: ImageConfig = {
   enabled: false,
   model: undefined,
   imageModel: undefined,
+  textModel: undefined,
+  toolModel: undefined,
   userAgent: undefined,
+  transport: "auto",
   defaultSize: "auto",
   defaultQuality: "auto",
 };
-const KNOWN_FIELDS = new Set(["enabled", "model", "imageModel", "userAgent", "defaultSize", "defaultQuality"]);
+const KNOWN_FIELDS = new Set(["enabled", "model", "imageModel", "textModel", "toolModel", "userAgent", "transport", "defaultSize", "defaultQuality"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -96,10 +101,21 @@ export function loadImageConfig(
     else if (validBareModel(raw.imageModel)) config.imageModel = raw.imageModel.trim();
     else { warnings.push("imageModel must be a non-empty image model id."); valid = false; }
   }
+  for (const key of ["textModel", "toolModel"] as const) {
+    const value = raw[key];
+    if (value === undefined) continue;
+    if (value === null) config[key] = undefined;
+    else if (validBareModel(value)) config[key] = value.trim();
+    else { warnings.push(`${key} must be a non-empty model id.`); valid = false; }
+  }
   if (raw.userAgent !== undefined) {
     if (raw.userAgent === null) config.userAgent = undefined;
     else if (validUserAgent(raw.userAgent)) config.userAgent = raw.userAgent.trim();
     else { warnings.push("userAgent must be a non-empty value without CR/LF."); valid = false; }
+  }
+  if (raw.transport !== undefined) {
+    if (typeof raw.transport === "string" && (IMAGE_TRANSPORTS as readonly string[]).includes(raw.transport)) config.transport = raw.transport as ImageTransport;
+    else { warnings.push(`transport must be one of ${IMAGE_TRANSPORTS.join(", ")}.`); valid = false; }
   }
   if (raw.defaultSize !== undefined) {
     if (typeof raw.defaultSize === "string" && (IMAGE_SIZES as readonly string[]).includes(raw.defaultSize)) config.defaultSize = raw.defaultSize as ImageSize;

@@ -5,6 +5,8 @@ export const IMAGE_MIME_TYPE = "image/png" as const;
 export const IMAGE_SIZES = ["auto", "1024x1024", "1536x1024", "1024x1536"] as const;
 export const IMAGE_QUALITIES = ["auto", "low", "medium", "high"] as const;
 export const IMAGE_ACTIONS = ["generate", "edit"] as const;
+/** Request transports: Responses tools[] + image_generation, or the Images API. */
+export const IMAGE_TRANSPORTS = ["auto", "responses", "images"] as const;
 
 export const MAX_PROMPT_CHARS = 20_000;
 export const MAX_PATH_CHARS = 4_096;
@@ -22,14 +24,23 @@ export const MAX_IMAGE_DIMENSION = 100_000;
 export type ImageSize = (typeof IMAGE_SIZES)[number];
 export type ImageQuality = (typeof IMAGE_QUALITIES)[number];
 export type ImageAction = (typeof IMAGE_ACTIONS)[number];
+export type ImageTransport = (typeof IMAGE_TRANSPORTS)[number];
+/** A transport that can actually be used for a request. */
+export type ActiveImageTransport = Exclude<ImageTransport, "auto">;
 
 export type ImageConfig = {
   enabled: boolean;
   /** Optional provider/model binding used only to resolve an endpoint and credentials. */
   model: string | undefined;
-  /** Image model sent directly to the Images API. */
+  /** Image model sent to the provider request payload. */
   imageModel: string | undefined;
+  /** Top-level Responses model that hosts the image_generation tool; defaults to the bound model. */
+  textModel: string | undefined;
+  /** Model declared inside the image_generation tool; defaults to imageModel. */
+  toolModel: string | undefined;
   userAgent: string | undefined;
+  /** Preferred transport; auto picks Responses for Responses-API providers. */
+  transport: ImageTransport;
   defaultSize: ImageSize;
   defaultQuality: ImageQuality;
 };
@@ -83,6 +94,14 @@ export type ImageGenerationRuntime = {
   baseUrl: string;
   generationUrl: string;
   editsUrl: string;
+  /** Responses endpoint used by the tools[] + image_generation transport. */
+  responsesUrl: string;
+  /** Primary transport resolved from configuration and provider API id. */
+  transport: ActiveImageTransport;
+  /** Top-level model for the Responses request. */
+  textModel: string;
+  /** Image model declared inside the image_generation tool, when configured. */
+  toolModel?: string;
   apiKey?: string;
   headers?: Record<string, string | null>;
   sessionId?: string;
@@ -115,6 +134,37 @@ export type ImageEditRequest = {
   clear: () => void;
 };
 
+/** Responses API request that declares the server-side image_generation tool. */
+export type ImageResponsesRequest = {
+  model: string;
+  store: false;
+  stream: true;
+  input: Array<{
+    type: "message";
+    role: "user";
+    content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }>;
+  }>;
+  tools: Array<{
+    type: "image_generation";
+    model: string;
+    action: ImageAction;
+    size: ImageSize;
+    quality: ImageQuality;
+    output_format: "png";
+  }>;
+  tool_choice: { type: "image_generation" };
+};
+
+/** Inputs for the Responses body; the caller decides which model plays which role. */
+export type ImageResponsesRequestOptions = {
+  /** Image model declared by the image_generation tool (tools[0].model). */
+  toolModel: string;
+  /** Top-level Responses model that hosts the tool. */
+  textModel: string;
+  params: NormalizedImageParams;
+  references: readonly PreparedReferenceImage[];
+};
+
 export type ParsedGeneratedImage = {
   bytes: Buffer;
   revisedPrompt?: string;
@@ -134,6 +184,8 @@ export type ImageGenerationDetails = {
   height: number;
   action: ImageAction;
   referenceCount: number;
+  /** Transport used for this result; absent on results persisted before transports existed. */
+  transport?: ActiveImageTransport;
   revisedPrompt?: string;
 };
 
@@ -204,6 +256,7 @@ export function isImageGenerationDetails(value: unknown): value is ImageGenerati
     typeof value.width === "number" && Number.isInteger(value.width) && value.width > 0 && value.width <= MAX_IMAGE_DIMENSION &&
     typeof value.height === "number" && Number.isInteger(value.height) && value.height > 0 && value.height <= MAX_IMAGE_DIMENSION &&
     typeof value.action === "string" && (IMAGE_ACTIONS as readonly string[]).includes(value.action) &&
-    typeof value.referenceCount === "number" && Number.isInteger(value.referenceCount) && value.referenceCount >= 0 && value.referenceCount <= MAX_REFERENCE_COUNT
+    typeof value.referenceCount === "number" && Number.isInteger(value.referenceCount) && value.referenceCount >= 0 && value.referenceCount <= MAX_REFERENCE_COUNT &&
+    (value.transport === undefined || (typeof value.transport === "string" && (["responses", "images"] as readonly string[]).includes(value.transport)))
   );
 }

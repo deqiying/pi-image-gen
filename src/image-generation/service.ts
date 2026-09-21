@@ -5,7 +5,7 @@ import { prepareExplicitOutputPath, saveCanonicalImage, copyImageToExplicitPath 
 import { clearPreparedReferences, prepareReferenceImages } from "./references.js";
 import { normalizeImageParams, validateImageRequest } from "./protocol.js";
 import { resolveImageRuntime } from "./runtime.js";
-import { IMAGE_MIME_TYPE, ImageGenerationError, sanitizeDiagnostic, type ImageGenerationContext, type ImageGenerationResult, type ImageToolParams } from "./types.js";
+import { IMAGE_MIME_TYPE, ImageGenerationError, sanitizeDiagnostic, type ActiveImageTransport, type ImageGenerationContext, type ImageGenerationResult, type ImageGenerationRuntime, type ImageToolParams } from "./types.js";
 
 export type ImageExecutionDependencies = {
   loadConfig: typeof loadImageConfig;
@@ -25,6 +25,11 @@ function getSessionId(ctx: ImageGenerationContext): string {
   try { return ctx.sessionManager.getSessionId(); } catch { return "session"; }
 }
 
+/** Model a given transport runs on: the Responses path declares toolModel when it is set. */
+function effectiveImageModel(runtime: ImageGenerationRuntime, imageModel: string, transport: ActiveImageTransport): string {
+  return transport === "responses" ? runtime.toolModel ?? imageModel : imageModel;
+}
+
 export async function executeImageGeneration(args: {
   params: ImageToolParams;
   toolCallId: string;
@@ -39,8 +44,10 @@ export async function executeImageGeneration(args: {
   const params = normalizeImageParams(args.params as unknown as Record<string, unknown>, { size: loaded.config.defaultSize, quality: loaded.config.defaultQuality });
   const imageModel = loaded.config.imageModel?.trim();
   if (!imageModel) throw new ImageGenerationError("config", "Direct Images API requests require imageModel in the plugin configuration.");
-  validateImageRequest(imageModel, params);
   const runtime = await deps.resolveRuntime(args.ctx, loaded.config);
+  // Validate the model the primary transport actually sends: the Responses path runs on
+  // toolModel and would otherwise inherit DALL-E-only restrictions from imageModel.
+  validateImageRequest(effectiveImageModel(runtime, imageModel, runtime.transport), params);
   const confirm = args.ctx.hasUI ? async (title: string, message: string, options?: { signal?: AbortSignal }) => args.ctx.ui.confirm(title, message, options) : undefined;
   const outputPlan = await prepareExplicitOutputPath({ cwd: args.ctx.cwd, agentDir: deps.agentDir(), hasUI: args.ctx.hasUI, ...(params.outputPath ? { rawPath: params.outputPath } : {}), ...(confirm ? { confirm } : {}), ...(args.signal ? { signal: args.signal } : {}) });
   const references = params.action === "edit"
@@ -51,6 +58,8 @@ export async function executeImageGeneration(args: {
     if (args.signal?.aborted) throw new ImageGenerationError("aborted", "Image generation was cancelled.");
     const response = await deps.requestImage({ runtime, imageModel, params, references, ...(loaded.config.userAgent ? { userAgent: loaded.config.userAgent } : {}), ...(args.signal ? { signal: args.signal } : {}) });
     if (!response.ok) throw new ImageGenerationError(response.reason === "no-image" ? "no-image" : response.reason, response.errorMessage);
+    // Report the model that actually produced the image, not the Images-API default.
+    const usedImageModel = effectiveImageModel(runtime, imageModel, response.transport);
     generated = response.image.bytes;
     const artifactPath = await saveCanonicalImage({ bytes: generated, agentDir: deps.agentDir(), sessionId: getSessionId(args.ctx), imageCallId: args.toolCallId });
     let outputPath: string | undefined;
@@ -62,7 +71,7 @@ export async function executeImageGeneration(args: {
       artifactPath,
       ...(outputPath ? { outputPath } : {}),
       providerModel: `${runtime.provider}/${runtime.providerModel}`,
-      imageModel,
+      imageModel: usedImageModel,
       imageCallId: args.toolCallId,
       mimeType: IMAGE_MIME_TYPE,
       byteCount: generated.length,
@@ -70,6 +79,7 @@ export async function executeImageGeneration(args: {
       height: response.image.height,
       action: params.action,
       referenceCount: references.length,
+      transport: response.transport,
       ...(response.image.revisedPrompt ? { revisedPrompt: response.image.revisedPrompt } : {}),
     };
     const lines = [

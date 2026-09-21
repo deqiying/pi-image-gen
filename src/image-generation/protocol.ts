@@ -15,6 +15,8 @@ import {
   type ImageCreateRequest,
   type ImageEditRequest,
   type ImageQuality,
+  type ImageResponsesRequest,
+  type ImageResponsesRequestOptions,
   type ImageSize,
   type NormalizedImageParams,
   type ParsedGeneratedImage,
@@ -40,10 +42,14 @@ function normalizePaths(value: unknown): string[] {
   return paths;
 }
 
-function requireImageModel(value: string): string {
+function requireModel(value: string, label: string): string {
   const model = value.trim();
-  if (!model || model.length > MAX_MODEL_CHARS || /[\r\n]/.test(model)) throw new ImageGenerationError("invalid-parameters", "A bounded imageModel is required.");
+  if (!model || model.length > MAX_MODEL_CHARS || /[\r\n]/.test(model)) throw new ImageGenerationError("invalid-parameters", `A bounded ${label} is required.`);
   return model;
+}
+
+function requireImageModel(value: string): string {
+  return requireModel(value, "imageModel");
 }
 
 export function normalizeImageParams(args: Record<string, unknown>, defaults?: { size?: ImageSize; quality?: ImageQuality }): NormalizedImageParams {
@@ -66,7 +72,7 @@ export function normalizeImageParams(args: Record<string, unknown>, defaults?: {
   return { prompt, action: action as ImageAction, referenceImagePaths, size: size as ImageSize, quality: quality as ImageQuality, ...(outputPath ? { outputPath } : {}) };
 }
 
-function isDallEModel(model: string): boolean {
+export function isDallEModel(model: string): boolean {
   return /^(?:dall-e-2|dall-e-3)$/i.test(model);
 }
 
@@ -191,4 +197,85 @@ export function parseImageGenerationResponse(value: unknown): { ok: true; image:
   return { ok: true, image: { bytes: decoded.bytes, ...(typeof item.revised_prompt === "string" ? { revisedPrompt: item.revised_prompt } : {}), width: decoded.width, height: decoded.height } };
 }
 
-export const _protocolTest = { PNG_SIGNATURE, hasPngEndChunk, requireImageModel };
+export type ImageResultParse =
+  | { ok: true; image: ParsedGeneratedImage }
+  | { ok: false; reason: "malformed-response" | "request-rejected" | "no-image" | "oversized-response"; errorMessage: string };
+
+/** DALL-E models are only reachable through the Images API, never the Responses tool. */
+export function supportsResponsesTool(imageModel: string): boolean {
+  return !isDallEModel(imageModel);
+}
+
+function referenceDataUrl(reference: PreparedReferenceImage): string {
+  return `data:${reference.mimeType};base64,${reference.bytes.toString("base64")}`;
+}
+
+/**
+ * Builds the Responses API payload that declares the server-side image_generation
+ * tool. This mirrors the official Codex client: the top-level `textModel` answers the
+ * request while the built-in tool named by `tool_choice` runs on `toolModel`.
+ *
+ * `tool_choice` only selects the tool (`{ "type": "image_generation" }`); the API
+ * defines no model field there, so the image model lives in `tools[0].model`.
+ *
+ * Reference bytes are read but not cleared here: the caller owns their lifetime so a
+ * capability fallback can still rebuild the same references as multipart data.
+ */
+export function buildImageResponsesRequest(options: ImageResponsesRequestOptions): string {
+  const { toolModel, textModel, params, references } = options;
+  const model = requireImageModel(toolModel);
+  if (isDallEModel(model)) throw new ImageGenerationError("unsupported-model", "DALL-E models do not support the Responses image_generation tool.");
+  validateImageRequest(model, params);
+  const content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> = [{ type: "input_text", text: params.prompt }];
+  for (const reference of references) content.push({ type: "input_image", image_url: referenceDataUrl(reference) });
+  const request: ImageResponsesRequest = {
+    model: requireModel(textModel, "textModel"),
+    store: false,
+    stream: true,
+    input: [{ type: "message", role: "user", content }],
+    tools: [{ type: "image_generation", model, action: params.action, size: params.size, quality: params.quality, output_format: "png" }],
+    tool_choice: { type: "image_generation" },
+  };
+  return JSON.stringify(request);
+}
+
+/**
+ * Decodes one Responses output item. Returns undefined when the item is not an
+ * image_generation_call at all, so callers can skip unrelated output items.
+ */
+export function decodeImageGenerationCall(item: unknown): ImageResultParse | undefined {
+  if (!isRecord(item) || item.type !== "image_generation_call") return undefined;
+  if (typeof item.result !== "string" || !item.result.trim()) {
+    const status = typeof item.status === "string" ? item.status : "unknown";
+    return { ok: false, reason: "no-image", errorMessage: `Responses API returned an image_generation_call without a result (status ${status}).` };
+  }
+  const decoded = decodeGeneratedPng(item.result);
+  if (!decoded.ok) return decoded;
+  return {
+    ok: true,
+    image: {
+      bytes: decoded.bytes,
+      ...(typeof item.revised_prompt === "string" ? { revisedPrompt: item.revised_prompt } : {}),
+      width: decoded.width,
+      height: decoded.height,
+    },
+  };
+}
+
+/** Parses a non-streaming Responses payload even though the tool always asks for SSE. */
+export function parseImageResponsesPayload(value: unknown): ImageResultParse {
+  if (!isRecord(value)) return { ok: false, reason: "malformed-response", errorMessage: "Responses API response was not an object." };
+  if (isRecord(value.error)) {
+    const message = typeof value.error.message === "string" ? value.error.message : "Responses API returned an error.";
+    return { ok: false, reason: "request-rejected", errorMessage: message };
+  }
+  if (!Array.isArray(value.output)) return { ok: false, reason: "malformed-response", errorMessage: "Responses API response did not contain an output array." };
+  const calls = value.output.map((item) => decodeImageGenerationCall(item)).filter((entry): entry is ImageResultParse => entry !== undefined);
+  if (calls.length === 0) return { ok: false, reason: "no-image", errorMessage: "Responses API completed without an image_generation_call output." };
+  const completed = calls.filter((entry) => entry.ok);
+  if (completed.length === 0) return calls[0]!;
+  if (completed.length > 1) return { ok: false, reason: "malformed-response", errorMessage: "A single image request returned multiple image results." };
+  return completed[0]!;
+}
+
+export const _protocolTest = { PNG_SIGNATURE, hasPngEndChunk, requireImageModel, isDallEModel, supportsResponsesTool, referenceDataUrl };

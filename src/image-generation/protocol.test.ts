@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildImageEditRequest, buildImageGenerationRequest, decodeGeneratedPng, normalizeImageParams, parseImageGenerationResponse } from "./protocol.js";
+import { buildImageEditRequest, buildImageGenerationRequest, buildImageResponsesRequest, decodeGeneratedPng, decodeImageGenerationCall, normalizeImageParams, parseImageGenerationResponse, parseImageResponsesPayload, supportsResponsesTool } from "./protocol.js";
 import type { ImageEditRequest } from "./types.js";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -154,4 +154,76 @@ test("rejects URL-only and multi-image responses", () => {
   const multiple = parseImageGenerationResponse({ created: 1, data: [{ b64_json: PNG }, { b64_json: PNG }] });
   assert.equal(multiple.ok, false);
   if (!multiple.ok) assert.equal(multiple.reason, "malformed-response");
+});
+
+test("builds the Responses image tool payload with independent text and tool models", () => {
+  const params = normalizeImageParams({ prompt: "a red square", action: "edit", referenceImagePaths: ["input.png"] });
+  const reference = Buffer.from("reference-bytes");
+  const body = JSON.parse(buildImageResponsesRequest({
+    toolModel: "gpt-image-2",
+    textModel: "chat-model",
+    params,
+    references: [{ path: "input.png", mimeType: "image/png", bytes: reference }],
+  })) as Record<string, any>;
+  assert.equal(body.model, "chat-model");
+  assert.equal(body.stream, true);
+  assert.equal(body.store, false);
+  // tool_choice only selects the built-in tool; the API defines no model field there.
+  assert.deepEqual(body.tool_choice, { type: "image_generation" });
+  assert.deepEqual(body.tools, [{ type: "image_generation", model: "gpt-image-2", action: "edit", size: "auto", quality: "auto", output_format: "png" }]);
+  assert.equal(body.input[0].content[1].type, "input_image");
+  assert.match(body.input[0].content[1].image_url, /^data:image\/png;base64,/);
+  // Caller owns the lifetime: the Images fallback rebuilds the same references.
+  assert.equal(reference.toString("latin1"), "reference-bytes");
+
+  assert.equal(supportsResponsesTool("gpt-image-2"), true);
+  assert.equal(supportsResponsesTool("dall-e-3"), false);
+  // The top-level model is validated as a text model, so the failure names it.
+  assert.throws(() => buildImageResponsesRequest({
+    toolModel: "gpt-image-2",
+    textModel: "  ",
+    params: normalizeImageParams({ prompt: "x", action: "generate" }),
+    references: [],
+  }), /textModel/);
+  assert.throws(() => buildImageResponsesRequest({
+    toolModel: "dall-e-3",
+    textModel: "chat-model",
+    params: normalizeImageParams({ prompt: "x", action: "generate" }),
+    references: [],
+  }), /DALL-E/);
+});
+
+test("decodes Responses image_generation_call output items", () => {
+  const done = decodeImageGenerationCall({ type: "image_generation_call", id: "ig_1", status: "completed", result: PNG, revised_prompt: "revised" });
+  assert.equal(done?.ok, true);
+  if (done?.ok) assert.equal(done.image.revisedPrompt, "revised");
+  assert.equal(decodeImageGenerationCall({ type: "message" }), undefined);
+
+  const empty = decodeImageGenerationCall({ type: "image_generation_call", status: "failed" });
+  assert.equal(empty?.ok, false);
+  if (empty && !empty.ok) assert.equal(empty.reason, "no-image");
+});
+
+test("parses non-streaming Responses payloads", () => {
+  const ok = parseImageResponsesPayload({ output: [{ type: "message" }, { type: "image_generation_call", status: "completed", result: PNG }] });
+  assert.equal(ok.ok, true);
+
+  const empty = parseImageResponsesPayload({ output: [] });
+  assert.equal(empty.ok, false);
+  if (!empty.ok) assert.equal(empty.reason, "no-image");
+
+  const textOnly = parseImageResponsesPayload({ output: [{ type: "message" }] });
+  assert.equal(textOnly.ok, false);
+  if (!textOnly.ok) assert.equal(textOnly.reason, "no-image");
+
+  const multiple = parseImageResponsesPayload({ output: [{ type: "image_generation_call", result: PNG }, { type: "image_generation_call", result: PNG }] });
+  assert.equal(multiple.ok, false);
+  if (!multiple.ok) assert.equal(multiple.reason, "malformed-response");
+
+  const failed = parseImageResponsesPayload({ error: { message: "tool unsupported" } });
+  assert.equal(failed.ok, false);
+  if (!failed.ok) {
+    assert.equal(failed.reason, "request-rejected");
+    assert.match(failed.errorMessage, /tool unsupported/);
+  }
 });

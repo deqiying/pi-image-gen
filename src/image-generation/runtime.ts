@@ -1,8 +1,10 @@
 import {
   ImageGenerationError,
+  type ActiveImageTransport,
   type ImageGenerationContext,
   type ImageGenerationRuntime,
   type ImageConfig,
+  type ImageTransport,
   type ResolvedAuth,
   sanitizeDiagnostic,
   type RuntimeModel,
@@ -12,6 +14,9 @@ export type ModelRegistryLike = {
   find: (provider: string, model: string) => RuntimeModel | undefined;
   getApiKeyAndHeaders?: (model: RuntimeModel) => Promise<ResolvedAuth>;
 };
+
+/** Provider API ids that speak the OpenAI Responses API and can host the image_generation tool. */
+const RESPONSES_APIS = new Set(["openai-responses", "openai-codex-responses"]);
 
 export function parseModelSpec(value: string): { provider: string; model: string } | undefined {
   const trimmed = value.trim();
@@ -25,12 +30,37 @@ function normalizeBaseUrl(value: string | undefined): string | undefined {
   return trimmed || undefined;
 }
 
-export function buildImagesUrl(baseUrl: string, action: "generate" | "edit"): string {
+function imageRequestRoot(baseUrl: string): string {
   const normalized = normalizeBaseUrl(baseUrl) ?? baseUrl;
-  const root = normalized
+  return normalized
     .replace(/\/images\/(?:generations|edits)$/i, "")
-    .replace(/\/images$/i, "");
-  return `${root}/images/${action === "edit" ? "edits" : "generations"}`;
+    .replace(/\/images$/i, "")
+    .replace(/\/responses$/i, "");
+}
+
+export function buildImagesUrl(baseUrl: string, action: "generate" | "edit"): string {
+  return `${imageRequestRoot(baseUrl)}/images/${action === "edit" ? "edits" : "generations"}`;
+}
+
+/**
+ * Responses endpoint for the tools[] + image_generation transport. Codex-style
+ * providers expose the ChatGPT backend under `/backend-api/codex/responses`, so a
+ * base URL that is not already codex-scoped gets that suffix (mirrors the host's
+ * own codex client, which appends `/codex/responses`).
+ */
+export function buildResponsesUrl(baseUrl: string, api: string): string {
+  const root = imageRequestRoot(baseUrl);
+  if (api === "openai-codex-responses" || /\/backend-api(?:\/|$)/i.test(root)) {
+    return root.endsWith("/codex") ? `${root}/responses` : `${root}/codex/responses`;
+  }
+  return `${root}/responses`;
+}
+
+/** Config override wins; otherwise Responses-API providers prefer the native tool. */
+export function resolveImageTransport(configured: ImageTransport, api: string): ActiveImageTransport {
+  if (configured === "images") return "images";
+  if (configured === "responses") return "responses";
+  return RESPONSES_APIS.has(api) ? "responses" : "images";
 }
 
 function modelFromContext(ctx: ImageGenerationContext, config: ImageConfig): RuntimeModel {
@@ -70,6 +100,12 @@ export async function resolveImageRuntime(ctx: ImageGenerationContext, config: I
     baseUrl,
     generationUrl: buildImagesUrl(baseUrl, "generate"),
     editsUrl: buildImagesUrl(baseUrl, "edit"),
+    responsesUrl: buildResponsesUrl(baseUrl, selected.api),
+    transport: resolveImageTransport(config.transport, selected.api),
+    // The Responses body's top-level model defaults to the bound model; the tool model
+    // stays unset unless configured, so the client can fall back to imageModel.
+    textModel: config.textModel ?? selected.id,
+    ...(config.toolModel ? { toolModel: config.toolModel } : {}),
     ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
     headers: { ...(selected.headers ?? {}), ...(auth.headers ?? {}) },
     ...(sessionId ? { sessionId } : {}),
@@ -77,4 +113,4 @@ export async function resolveImageRuntime(ctx: ImageGenerationContext, config: I
   };
 }
 
-export const _runtimeTest = { normalizeBaseUrl, modelFromContext };
+export const _runtimeTest = { normalizeBaseUrl, modelFromContext, imageRequestRoot, RESPONSES_APIS };

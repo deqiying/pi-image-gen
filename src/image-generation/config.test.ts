@@ -14,6 +14,7 @@ test("loads image config and preserves the provider binding/image model split", 
   assert.equal(loaded.config.model, "gateway/chat-model");
   assert.equal(loaded.config.imageModel, "image-2");
   assert.equal(loaded.config.defaultSize, "1024x1024");
+  assert.equal(loaded.config.transport, "auto");
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -62,4 +63,56 @@ test("invalid model and User-Agent values fail closed", () => {
   assert.equal(_configTest.validModelSpec("not a model"), false);
   assert.equal(_configTest.validUserAgent("client/1"), true);
   assert.equal(_configTest.validUserAgent("bad\nvalue"), false);
+});
+
+test("parses the transport override and fails closed on unknown values", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-image-transport-"));
+  const file = join(dir, "config.json");
+  try {
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", transport: "images" }));
+    assert.equal(loadImageConfig(file).config.transport, "images");
+
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", transport: "responses" }));
+    assert.equal(loadImageConfig(file).config.transport, "responses");
+
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", transport: "carrier-pigeon" }));
+    const invalid = loadImageConfig(file);
+    assert.equal(invalid.valid, false);
+    assert.equal(invalid.config.enabled, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parses the text and image tool model overrides and fails closed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-image-models-"));
+  const file = join(dir, "config.json");
+  try {
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", textModel: "gpt-5.4", toolModel: "gpt-image-1.5" }));
+    const loaded = loadImageConfig(file);
+    assert.equal(loaded.valid, true);
+    assert.equal(loaded.config.textModel, "gpt-5.4");
+    assert.equal(loaded.config.toolModel, "gpt-image-1.5");
+
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", textModel: "gpt-5.4", toolModel: null }));
+    const cleared = loadImageConfig(file);
+    assert.equal(cleared.valid, true);
+    assert.equal(cleared.config.textModel, "gpt-5.4");
+    assert.equal(cleared.config.toolModel, undefined);
+
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", toolModel: "  " }));
+    const invalid = loadImageConfig(file);
+    assert.equal(invalid.valid, false);
+    assert.equal(invalid.config.enabled, false);
+    assert.match(invalid.warnings.join(" "), /toolModel/);
+
+    writeFileSync(file, JSON.stringify({ enabled: true, imageModel: "gpt-image-2", textModel: "", toolModel: 7 }));
+    const wrongTypes = loadImageConfig(file);
+    assert.equal(wrongTypes.valid, false);
+    assert.equal(wrongTypes.config.enabled, false);
+    assert.match(wrongTypes.warnings.join(" "), /textModel/);
+    assert.match(wrongTypes.warnings.join(" "), /toolModel/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -24,16 +24,18 @@ test("executes image_gen through the direct Images API client", async () => {
       toolCallId: "tool-1",
       ctx,
       deps: {
-        loadConfig: () => ({ config: { enabled: true, model: "image/credential-model", imageModel: "image-2", userAgent: undefined, defaultSize: "auto", defaultQuality: "auto" }, warnings: [], valid: true }),
-        resolveRuntime: async () => ({ provider: "image", api: "openai-responses", providerModel: "credential-model", baseUrl: "https://image/v1", generationUrl: "https://image/v1/images/generations", editsUrl: "https://image/v1/images/edits", apiKey: "secret", headers: {}, sessionId: "session-1", currentModel: { provider: "image", id: "credential-model", api: "openai-responses" } }),
-        requestImage: async (args) => { sent = args; return { ok: true as const, status: 200, image: { bytes: Buffer.from(PNG), width: 1, height: 1 } }; },
+        loadConfig: () => ({ config: { enabled: true, model: "image/credential-model", imageModel: "image-2", textModel: undefined, toolModel: undefined, userAgent: undefined, transport: "auto", defaultSize: "auto", defaultQuality: "auto" }, warnings: [], valid: true }),
+        resolveRuntime: async () => ({ provider: "image", api: "openai-responses", providerModel: "credential-model", baseUrl: "https://image/v1", generationUrl: "https://image/v1/images/generations", editsUrl: "https://image/v1/images/edits", responsesUrl: "https://image/v1/responses", transport: "responses", textModel: "credential-model", apiKey: "secret", headers: {}, sessionId: "session-1", currentModel: { provider: "image", id: "credential-model", api: "openai-responses" } }),
+        requestImage: async (args) => { sent = args; return { ok: true as const, status: 200, transport: "responses" as const, image: { bytes: Buffer.from(PNG), width: 1, height: 1 } }; },
         agentDir: () => root,
       },
     });
     assert.equal(sent.imageModel, "image-2");
+    assert.equal(sent.runtime.textModel, "credential-model");
     assert.equal(sent.params.prompt, "a square");
     assert.deepEqual(sent.references, []);
     assert.equal(result.details.providerModel, "image/credential-model");
+    assert.equal(result.details.transport, "responses");
     assert.equal(result.details.imageModel, "image-2");
     assert.equal(result.details.imageCallId, "tool-1");
     assert.equal(result.details.action, "generate");
@@ -57,7 +59,35 @@ test("requires an explicit imageModel for direct Images API calls", async () => 
     toolCallId: "tool-1",
     ctx,
     deps: {
-      loadConfig: () => ({ config: { enabled: true, model: undefined, imageModel: undefined, userAgent: undefined, defaultSize: "auto", defaultQuality: "auto" }, warnings: [], valid: true }),
+      loadConfig: () => ({ config: { enabled: true, model: undefined, imageModel: undefined, textModel: undefined, toolModel: undefined, userAgent: undefined, transport: "auto", defaultSize: "auto", defaultQuality: "auto" }, warnings: [], valid: true }),
     },
   }), /require imageModel/);
+});
+
+test("reports the Responses tool model as the model that produced the image", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-image-service-tool-model-"));
+  try {
+    const result = await executeImageGeneration({
+      params: { prompt: "a square", action: "generate" },
+      toolCallId: "tool-2",
+      ctx: {
+        model: { provider: "main", id: "main-model", api: "openai-responses", baseUrl: "https://main/v1" },
+        modelRegistry: {},
+        sessionManager: { getSessionId: () => "session-1" },
+        cwd: root,
+        hasUI: false,
+        ui: {},
+      } as never,
+      deps: {
+        loadConfig: () => ({ config: { enabled: true, model: "image/credential-model", imageModel: "gpt-image-2", textModel: "gpt-5.4", toolModel: "gpt-image-1.5", userAgent: undefined, transport: "auto", defaultSize: "auto", defaultQuality: "auto" }, warnings: [], valid: true }),
+        resolveRuntime: async () => ({ provider: "image", api: "openai-responses", providerModel: "credential-model", baseUrl: "https://image/v1", generationUrl: "https://image/v1/images/generations", editsUrl: "https://image/v1/images/edits", responsesUrl: "https://image/v1/responses", transport: "responses", textModel: "gpt-5.4", toolModel: "gpt-image-1.5", apiKey: "secret", headers: {}, sessionId: "session-1", currentModel: { provider: "image", id: "credential-model", api: "openai-responses" } }),
+        requestImage: async () => ({ ok: true as const, status: 200, transport: "responses" as const, image: { bytes: Buffer.from(PNG), width: 1, height: 1 } }),
+        agentDir: () => root,
+      },
+    });
+    // The image model that generated it is toolModel, not the Images-API default.
+    assert.equal(result.details.imageModel, "gpt-image-1.5");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
